@@ -28,7 +28,7 @@ The idea: whether you're an engineer optimizing a matmul kernel or a manager tra
 
 ```bash
 # 1. Clone
-git clone https://github.com/YOUR_USERNAME/own-your-graph.git
+git clone https://github.com/Jinlock9/own-your-graph.git
 cd own-your-graph
 
 # 2. Create and activate venv
