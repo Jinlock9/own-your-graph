@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# database
+*.db
+
+# venv
+venv/
+.venv/
+
+# env vars
+.env
+
+# static (empty for now — remove this line if you add CSS/JS files)
+static/
