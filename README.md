@@ -81,7 +81,6 @@ export DATABASE_URL="postgresql://user:password@host:5432/dbname"
 
 ## Example Use Cases
 
-- **Compiler engineer**: track cycle counts of a matmul kernel across optimization attempts
 - **Engineer**: track build times, test suite duration, binary size
 - **Manager**: track weekly active users, team velocity, incident count
 - **Anyone**: body weight, sleep hours, daily steps — anything with a number
