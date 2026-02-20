@@ -91,7 +91,9 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         entries = sorted(m.entries, key=lambda e: e.recorded_at)
         latest  = entries[-1].value if entries else None
         best    = min(e.value for e in entries) if entries and m.lower_better else (max(e.value for e in entries) if entries else None)
-        summaries.append({"metric": m, "count": len(entries), "latest": latest, "best": best})
+        first   = entries[0].value if entries else None
+        pct     = ((latest - first) / first * 100) if (first is not None and first != 0 and latest is not None) else None
+        summaries.append({"metric": m, "count": len(entries), "latest": latest, "best": best, "first": first, "pct": pct})
     return templates.TemplateResponse("dashboard.html", {"request": request, "summaries": summaries})
 
 # ── Create metric ─────────────────────────────────────────────────────────────

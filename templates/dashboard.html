@@ -20,12 +20,14 @@
   </div>
 </div>
 {% else %}
-<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1.2rem;">
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:1.2rem;">
   {% for s in summaries %}
   <a href="/metrics/{{ s.metric.id }}" style="text-decoration:none;">
     <div class="card" style="transition:border-color 0.2s,box-shadow 0.2s;cursor:pointer;"
          onmouseover="this.style.borderColor='rgba(0,229,255,0.35)';this.style.boxShadow='0 0 24px rgba(0,229,255,0.07)'"
          onmouseout="this.style.borderColor='';this.style.boxShadow=''">
+
+      <!-- Header -->
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1rem;">
         <div>
           <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:1rem;color:#fff;">
@@ -38,11 +40,16 @@
         <div style="display:flex;gap:0.4rem;flex-wrap:wrap;justify-content:flex-end;">
           {% if s.metric.unit %}<span class="tag tag-accent">{{ s.metric.unit }}</span>{% endif %}
           <span class="tag">{{ s.count }} pts</span>
-          {% if s.metric.lower_better %}<span class="tag" style="color:var(--text-dim)">↓ better</span>
-          {% else %}<span class="tag" style="color:var(--text-dim)">↑ better</span>{% endif %}
+          {% if s.metric.lower_better %}
+            <span class="tag" style="color:var(--text-dim)">↓ better</span>
+          {% else %}
+            <span class="tag" style="color:var(--text-dim)">↑ better</span>
+          {% endif %}
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;">
+
+      <!-- Stats -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.8rem;">
         <div>
           <div style="font-size:0.65rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dim);">Latest</div>
           <div style="font-size:1.3rem;font-family:'Syne',sans-serif;font-weight:700;color:#fff;margin-top:0.1rem;">
@@ -55,7 +62,19 @@
             {% if s.best is not none %}{{ "%.4g"|format(s.best) }}{% else %}—{% endif %}
           </div>
         </div>
+        <div>
+          <div style="font-size:0.65rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dim);">vs. First</div>
+          {% if s.count >= 2 and s.pct is not none %}
+            {% set improved = (s.pct < 0) if s.metric.lower_better else (s.pct > 0) %}
+            <div style="font-size:1.3rem;font-family:'Syne',sans-serif;font-weight:700;margin-top:0.1rem;color:{{ '#00e676' if improved else '#ff4081' }};">
+              {{ '+' if s.pct > 0 else '' }}{{ "%.1f"|format(s.pct) }}%
+            </div>
+          {% else %}
+            <div style="font-size:1.3rem;font-family:'Syne',sans-serif;font-weight:700;margin-top:0.1rem;color:var(--text-dim);">—</div>
+          {% endif %}
+        </div>
       </div>
+
     </div>
   </a>
   {% endfor %}
