@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — own/graph{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title"><span>//</span> Dashboard</div>
+    <div style="font-size:0.72rem;color:var(--text-dim);margin-top:0.3rem;letter-spacing:0.06em;">
+      {{ summaries|length }} metric{{ 's' if summaries|length != 1 else '' }} tracked
+    </div>
+  </div>
+  <a href="/metrics/new" class="btn">+ New Metric</a>
+</div>
+
+{% if not summaries %}
+<div class="card" style="text-align:center;padding:3rem;">
+  <div style="font-size:2rem;margin-bottom:1rem;color:var(--text-dim);">[ ]</div>
+  <div style="font-size:0.9rem;color:var(--text-dim);">No metrics yet.</div>
+  <div style="margin-top:1.5rem;">
+    <a href="/metrics/new" class="btn">Create your first metric →</a>
+  </div>
+</div>
+{% else %}
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1.2rem;">
+  {% for s in summaries %}
+  <a href="/metrics/{{ s.metric.id }}" style="text-decoration:none;">
+    <div class="card" style="transition:border-color 0.2s,box-shadow 0.2s;cursor:pointer;"
+         onmouseover="this.style.borderColor='rgba(0,229,255,0.35)';this.style.boxShadow='0 0 24px rgba(0,229,255,0.07)'"
+         onmouseout="this.style.borderColor='';this.style.boxShadow=''">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1rem;">
+        <div>
+          <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:1rem;color:#fff;">
+            {{ s.metric.name }}
+          </div>
+          {% if s.metric.description %}
+          <div style="font-size:0.72rem;color:var(--text-dim);margin-top:0.2rem;">{{ s.metric.description }}</div>
+          {% endif %}
+        </div>
+        <div style="display:flex;gap:0.4rem;flex-wrap:wrap;justify-content:flex-end;">
+          {% if s.metric.unit %}<span class="tag tag-accent">{{ s.metric.unit }}</span>{% endif %}
+          <span class="tag">{{ s.count }} pts</span>
+          {% if s.metric.lower_better %}<span class="tag" style="color:var(--text-dim)">↓ better</span>
+          {% else %}<span class="tag" style="color:var(--text-dim)">↑ better</span>{% endif %}
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;">
+        <div>
+          <div style="font-size:0.65rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dim);">Latest</div>
+          <div style="font-size:1.3rem;font-family:'Syne',sans-serif;font-weight:700;color:#fff;margin-top:0.1rem;">
+            {% if s.latest is not none %}{{ "%.4g"|format(s.latest) }}{% else %}—{% endif %}
+          </div>
+        </div>
+        <div>
+          <div style="font-size:0.65rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dim);">Best</div>
+          <div style="font-size:1.3rem;font-family:'Syne',sans-serif;font-weight:700;color:var(--success);margin-top:0.1rem;">
+            {% if s.best is not none %}{{ "%.4g"|format(s.best) }}{% else %}—{% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

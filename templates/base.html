@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}Tracker{% endblock %}</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+  :root {
+    --bg:        #070b14;
+    --bg2:       #0d1426;
+    --bg3:       #111c35;
+    --border:    rgba(0,229,255,0.12);
+    --accent:    #00e5ff;
+    --accent2:   #ff4081;
+    --text:      #c8d0e0;
+    --text-dim:  #4a5568;
+    --success:   #00e676;
+    --warn:      #ffab40;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(ellipse 80% 60% at 50% -10%, rgba(0,229,255,0.06) 0%, transparent 60%),
+      linear-gradient(180deg, var(--bg) 0%, #050810 100%);
+  }
+  nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 2rem;
+    border-bottom: 1px solid var(--border);
+    background: rgba(7,11,20,0.8);
+    backdrop-filter: blur(10px);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .nav-brand {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 1.1rem;
+    color: var(--accent);
+    text-decoration: none;
+    letter-spacing: 0.05em;
+  }
+  .nav-brand span { color: var(--text-dim); font-weight: 400; }
+  .nav-links { display: flex; gap: 1.5rem; align-items: center; }
+  .nav-links a {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    transition: color 0.2s;
+  }
+  .nav-links a:hover { color: var(--accent); }
+  main { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    padding: 0.5rem 1.1rem;
+    border: 1px solid var(--border);
+    background: rgba(0,229,255,0.06);
+    color: var(--accent);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.2s;
+    clip-path: polygon(6px 0%, 100% 0%, calc(100% - 6px) 100%, 0% 100%);
+  }
+  .btn:hover {
+    background: rgba(0,229,255,0.14);
+    border-color: var(--accent);
+    box-shadow: 0 0 16px rgba(0,229,255,0.15);
+  }
+  .btn-danger {
+    border-color: rgba(255,64,129,0.2);
+    color: var(--accent2);
+    background: rgba(255,64,129,0.05);
+  }
+  .btn-danger:hover { background: rgba(255,64,129,0.12); border-color: var(--accent2); box-shadow: 0 0 16px rgba(255,64,129,0.15); }
+
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    padding: 1.5rem;
+    position: relative;
+    overflow: hidden;
+  }
+  .card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: 0.4;
+  }
+
+  input, textarea, select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    padding: 0.6rem 0.9rem;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  input:focus, textarea:focus, select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(0,229,255,0.1);
+  }
+  label {
+    display: block;
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 0.4rem;
+  }
+  .form-group { margin-bottom: 1.1rem; }
+
+  .tag {
+    display: inline-block;
+    padding: 0.15rem 0.55rem;
+    font-size: 0.65rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  .tag-accent { border-color: rgba(0,229,255,0.3); color: var(--accent); }
+  .tag-success { border-color: rgba(0,230,118,0.3); color: var(--success); }
+  .tag-warn { border-color: rgba(255,171,64,0.3); color: var(--warn); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  th {
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 0.65rem 0.8rem;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    vertical-align: middle;
+  }
+  tr:hover td { background: rgba(0,229,255,0.02); }
+
+  .page-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .page-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.6rem;
+    font-weight: 800;
+    color: #fff;
+  }
+  .page-title span { color: var(--accent); }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+  .stat-box {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    padding: 1rem;
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #fff;
+    font-family: 'Syne', sans-serif;
+  }
+  .stat-label {
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-top: 0.25rem;
+  }
+  .improved { color: var(--success) !important; }
+  .worsened { color: var(--accent2) !important; }
+
+  .error-msg {
+    background: rgba(255,64,129,0.08);
+    border: 1px solid rgba(255,64,129,0.3);
+    color: var(--accent2);
+    padding: 0.75rem 1rem;
+    font-size: 0.82rem;
+    margin-bottom: 1rem;
+  }
+</style>
+{% block extra_head %}{% endblock %}
+</head>
+<body>
+<nav>
+  <a href="/" class="nav-brand">own<span>/</span>graph</a>
+  <div class="nav-links">
+    <a href="/">Dashboard</a>
+    <a href="/metrics/new">+ New Metric</a>
+    <a href="/logout">Logout</a>
+  </div>
+</nav>
+<main>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

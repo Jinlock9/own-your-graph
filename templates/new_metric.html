@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}New Metric — own/graph{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div class="page-title"><span>//</span> New Metric</div>
+  <a href="/" class="btn">← Back</a>
+</div>
+
+<div style="max-width:520px;">
+  <div class="card">
+    {% if error %}<div class="error-msg">{{ error }}</div>{% endif %}
+    <form method="post" action="/metrics/new">
+      <div class="form-group">
+        <label for="name">Metric Name *</label>
+        <input type="text" id="name" name="name" placeholder="e.g. matmul_kernel_cycles" required>
+      </div>
+      <div class="form-group">
+        <label for="description">Description</label>
+        <input type="text" id="description" name="description" placeholder="e.g. GEMM 1024x1024 cycle count on A100">
+      </div>
+      <div class="form-group">
+        <label for="unit">Unit</label>
+        <input type="text" id="unit" name="unit" placeholder="e.g. cycles, ms, kg, reps">
+      </div>
+      <div class="form-group">
+        <label for="lower_better">Goal Direction</label>
+        <select id="lower_better" name="lower_better">
+          <option value="1">Lower is better (performance, time, cycles)</option>
+          <option value="0">Higher is better (score, weight, accuracy)</option>
+        </select>
+      </div>
+      <button type="submit" class="btn" style="width:100%;justify-content:center;padding:0.75rem;">
+        Create Metric →
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}
