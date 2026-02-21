@@ -15,6 +15,51 @@
 <div class="error-msg">{{ error }}</div>
 {% endif %}
 
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;align-items:start;margin-bottom:1.5rem;">
+
+  <!-- Email address -->
+  <div class="card">
+    <div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;
+                color:var(--accent);margin-bottom:1.2rem;">Email Address</div>
+    <div style="font-size:0.7rem;color:var(--text-dim);margin-bottom:0.8rem;line-height:1.6;">
+      Used for password resets. Leave blank to disable the forgot-password feature.
+    </div>
+    <form method="post" action="/settings/update-email">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email"
+               value="{{ user.email or '' }}"
+               placeholder="you@example.com" autocomplete="email">
+      </div>
+      <button type="submit" class="btn" style="width:100%;justify-content:center;padding:0.7rem;">
+        Save Email →
+      </button>
+    </form>
+  </div>
+
+  <!-- Change Password -->
+  <div class="card">
+    <div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;
+                color:var(--accent);margin-bottom:1.2rem;">Change Password</div>
+    <form method="post" action="/settings/change-password">
+      <div class="form-group">
+        <label for="current_password">Current Password</label>
+        <input type="password" id="current_password" name="current_password"
+               placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <div class="form-group">
+        <label for="new_password">New Password</label>
+        <input type="password" id="new_password" name="new_password"
+               placeholder="min 8 characters" autocomplete="new-password">
+      </div>
+      <button type="submit" class="btn" style="width:100%;justify-content:center;padding:0.7rem;">
+        Update Password →
+      </button>
+    </form>
+  </div>
+
+</div>
+
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;align-items:start;">
 
   <!-- API Key -->
@@ -43,27 +88,6 @@
           onsubmit="return confirm('Regenerate API key? The old key will stop working immediately.')">
       <button type="submit" class="btn btn-danger" style="width:100%;justify-content:center;">
         ↻ Regenerate Key
-      </button>
-    </form>
-  </div>
-
-  <!-- Change Password -->
-  <div class="card">
-    <div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;
-                color:var(--accent);margin-bottom:1.2rem;">Change Password</div>
-    <form method="post" action="/settings/change-password">
-      <div class="form-group">
-        <label for="current_password">Current Password</label>
-        <input type="password" id="current_password" name="current_password"
-               placeholder="••••••••" autocomplete="current-password">
-      </div>
-      <div class="form-group">
-        <label for="new_password">New Password</label>
-        <input type="password" id="new_password" name="new_password"
-               placeholder="min 8 characters" autocomplete="new-password">
-      </div>
-      <button type="submit" class="btn" style="width:100%;justify-content:center;padding:0.7rem;">
-        Update Password →
       </button>
     </form>
   </div>
