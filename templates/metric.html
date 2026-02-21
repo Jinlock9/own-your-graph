@@ -27,6 +27,14 @@
     border-bottom: 1px solid var(--border);
   }
 </style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.min.css">
+{% if time_unit == 'month' %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/plugins/monthSelect/style.css">
+{% endif %}
+<style>
+  .flatpickr-input { cursor: pointer; }
+  .flatpickr-calendar { font-family: inherit; }
+</style>
 {% endblock %}
 {% block content %}
 <div class="page-header">
@@ -42,6 +50,7 @@
       {% if metric.graph_mode == 'multi' %}
         <span class="tag" style="border-color:rgba(255,171,64,0.35);color:var(--warn);">multi graph</span>
       {% endif %}
+      <span class="tag" style="color:var(--text-dim)">per {{ time_unit }}</span>
       {% if metric.description %}
       <span style="font-size:0.75rem;color:var(--text-dim);">— {{ metric.description }}</span>
       {% endif %}
@@ -179,12 +188,76 @@
         <input type="number" id="value" name="value" step="any" placeholder="e.g. 482930" required>
       </div>
       <div class="form-group">
-        <label for="recorded_at">Date / Time</label>
-        <input type="datetime-local" id="recorded_at" name="recorded_at">
-          <script>
-            document.getElementById('recorded_at').value = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-          </script>
-        <div style="font-size:0.65rem;color:var(--text-dim);margin-top:0.3rem;">Leave blank for now</div>
+        {% if time_unit == 'month' %}
+        <label>Month</label>
+        <input type="text" id="ra_month_display" placeholder="Pick a month" readonly>
+        <input type="hidden" id="recorded_at" name="recorded_at">
+        <script src="https://cdn.jsdelivr.net/npm/flatpickr" defer></script>
+        <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/plugins/monthSelect/index.js" defer></script>
+        <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            function applyMonth(date) {
+              const yyyy = date.getFullYear();
+              const mm = String(date.getMonth() + 1).padStart(2, '0');
+              document.getElementById('recorded_at').value = `${yyyy}-${mm}`;
+              document.getElementById('ra_month_display').value =
+                date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+            }
+            applyMonth(new Date());
+            flatpickr('#ra_month_display', {
+              plugins: [new monthSelectPlugin({ shorthand: false, dateFormat: 'Y-m', altFormat: 'F Y' })],
+              defaultDate: new Date(),
+              onChange: function(dates) { if (dates.length) applyMonth(dates[0]); }
+            });
+          });
+        </script>
+        {% elif time_unit == 'week' %}
+        <label>Week</label>
+        <input type="text" id="ra_week_display" placeholder="Pick a week" readonly>
+        <input type="hidden" id="recorded_at" name="recorded_at">
+        <script src="https://cdn.jsdelivr.net/npm/flatpickr" defer></script>
+        <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            function isoWeek(date) {
+              const u = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+              const day = u.getUTCDay() || 7;
+              u.setUTCDate(u.getUTCDate() + 4 - day);
+              const jan1 = new Date(Date.UTC(u.getUTCFullYear(), 0, 1));
+              return { year: u.getUTCFullYear(), week: Math.ceil((((u - jan1) / 86400000) + 1) / 7) };
+            }
+            function applyWeek(date) {
+              const { year, week } = isoWeek(date);
+              document.getElementById('recorded_at').value = `${year}-W${String(week).padStart(2, '0')}`;
+              document.getElementById('ra_week_display').value = `Week ${week}, ${year}`;
+            }
+            applyWeek(new Date());
+            flatpickr('#ra_week_display', {
+              weekNumbers: true,
+              defaultDate: new Date(),
+              onChange: function(dates) { if (dates.length) applyWeek(dates[0]); }
+            });
+          });
+        </script>
+        {% else %}
+        <label for="recorded_at">Date</label>
+        <input type="text" id="recorded_at" name="recorded_at" placeholder="Pick a date" readonly>
+        <script src="https://cdn.jsdelivr.net/npm/flatpickr" defer></script>
+        <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            const t = new Date();
+            flatpickr('#recorded_at', {
+              defaultDate: t,
+              dateFormat: 'Y-m-d',
+              disableMobile: false,
+            });
+          });
+        </script>
+        {% endif %}
+        <div style="font-size:0.65rem;color:var(--text-dim);margin-top:0.3rem;">
+          {% if time_unit == 'week' %}Leave blank for this week
+          {% elif time_unit == 'month' %}Leave blank for this month
+          {% else %}Leave blank for today{% endif %}
+        </div>
       </div>
       <div class="form-group">
         <label for="note">Note</label>
@@ -265,7 +338,9 @@
             {% endif %}
             <td style="font-weight:500;color:#fff;">{{ e.value }}</td>
             <td style="color:var(--text-dim);font-size:0.78rem;">
-              {{ e.recorded_at.strftime('%Y-%m-%d %H:%M') }}
+              {% if time_unit == 'week' %}{{ e.recorded_at.strftime('%G-W%V') }}
+              {% elif time_unit == 'month' %}{{ e.recorded_at.strftime('%Y-%m') }}
+              {% else %}{{ e.recorded_at.strftime('%Y-%m-%d') }}{% endif %}
             </td>
             <td style="color:var(--text-dim);font-size:0.78rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
               {{ e.note or '—' }}
