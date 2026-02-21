@@ -1,11 +1,15 @@
 import os
 import json
+import csv
+import io
+import hashlib
+import secrets
 from collections import defaultdict
 from datetime import datetime, date as date_type, time as time_type
 from typing import Optional
 
-from fastapi import FastAPI, Request, Form, Depends, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Request, Form, Depends, HTTPException, Header
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, ForeignKey, Text, text
@@ -15,16 +19,27 @@ import plotly.graph_objects as go
 import plotly.utils
 from itsdangerous import URLSafeTimedSerializer
 from starlette.middleware.sessions import SessionMiddleware
+from pydantic import BaseModel
 
 # ── Config ────────────────────────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./tracker.db")
-PASSWORD     = os.getenv("TRACKER_PASSWORD", "changeme")
 SECRET_KEY   = os.getenv("SECRET_KEY", "super-secret-key-change-in-prod")
 
 # ── DB setup ──────────────────────────────────────────────────────────────────
-engine       = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine       = create_engine(DATABASE_URL, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base         = declarative_base()
+
+
+class User(Base):
+    __tablename__ = "users"
+    id            = Column(Integer, primary_key=True, index=True)
+    username      = Column(String, unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    api_key       = Column(String, unique=True, nullable=True)
+    created_at    = Column(DateTime, default=datetime.utcnow)
+
 
 class Metric(Base):
     __tablename__ = "metrics"
@@ -38,6 +53,8 @@ class Metric(Base):
     time_unit    = Column(String, default='day')        # 'day', 'week', or 'month'
     created_at   = Column(DateTime, default=datetime.utcnow)
     entries      = relationship("Entry", back_populates="metric", cascade="all, delete-orphan")
+    annotations  = relationship("Annotation", back_populates="metric", cascade="all, delete-orphan")
+
 
 class Entry(Base):
     __tablename__ = "entries"
@@ -48,6 +65,16 @@ class Entry(Base):
     series_label = Column(String, nullable=True)       # used in multi-graph mode
     recorded_at  = Column(DateTime, default=datetime.utcnow)
     metric       = relationship("Metric", back_populates="entries")
+
+
+class Annotation(Base):
+    __tablename__ = "annotations"
+    id           = Column(Integer, primary_key=True, index=True)
+    metric_id    = Column(Integer, ForeignKey("metrics.id"), nullable=False)
+    label        = Column(String, nullable=False)
+    annotated_at = Column(DateTime, nullable=False)
+    metric       = relationship("Metric", back_populates="annotations")
+
 
 Base.metadata.create_all(bind=engine)
 
@@ -65,15 +92,44 @@ with engine.connect() as _conn:
         except Exception:
             pass  # column already exists
 
+# ── Password helpers ───────────────────────────────────────────────────────────
+def _hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    key  = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 260_000)
+    return f"{salt}:{key.hex()}"
+
+
+def _verify_password(password: str, hashed: str) -> bool:
+    try:
+        salt, key_hex = hashed.split(':', 1)
+    except ValueError:
+        return False
+    key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 260_000)
+    return secrets.compare_digest(key.hex(), key_hex)
+
+
 # ── Series colour palette ──────────────────────────────────────────────────────
 SERIES_COLORS = ["#00e5ff", "#ff4081", "#00e676", "#ffab40", "#ce93d8", "#ff6e40", "#40c4ff"]
 
+
 def _format_date(dt: datetime, time_unit: str) -> str:
     if time_unit == 'week':
-        return dt.strftime("%G-W%V")   # ISO year + ISO week, matches <input type="week">
+        return dt.strftime("%G-W%V")   # ISO year + ISO week
     elif time_unit == 'month':
         return dt.strftime("%Y-%m")
     return dt.strftime("%Y-%m-%d")
+
+
+def _parse_recorded_at(ra: str) -> datetime:
+    """Parse date string (day/week/month format) into a datetime."""
+    if 'W' in ra:
+        d = datetime.strptime(ra + '-1', "%G-W%V-%u").date()
+    elif len(ra) == 7:
+        d = date_type.fromisoformat(ra + '-01')
+    else:
+        d = date_type.fromisoformat(ra[:10])
+    return datetime.combine(d, time_type.min)
+
 
 def _chart_layout(unit: str | None) -> dict:
     return dict(
@@ -87,11 +143,13 @@ def _chart_layout(unit: str | None) -> dict:
         hovermode="x unified",
     )
 
+
 # ── App setup ─────────────────────────────────────────────────────────────────
 app = FastAPI()
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
 
 def get_db():
     db = SessionLocal()
@@ -100,31 +158,219 @@ def get_db():
     finally:
         db.close()
 
-def require_auth(request: Request):
-    if not request.session.get("authenticated"):
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
+
+def _uid(request: Request) -> int | None:
+    return request.session.get("user_id")
+
+
+# ── API key auth dependency ────────────────────────────────────────────────────
+def get_api_user(x_api_key: str = Header(None), db: Session = Depends(get_db)):
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="Missing X-Api-Key header")
+    user = db.query(User).filter(User.api_key == x_api_key).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return user
+
+
+# ── Pydantic model for REST API ────────────────────────────────────────────────
+class EntryCreate(BaseModel):
+    value: float
+    note: Optional[str] = None
+    recorded_at: Optional[str] = None   # "YYYY-MM-DD" | "YYYY-Www" | "YYYY-MM"
+    series_label: Optional[str] = None
+
+
+# ── First-time setup ───────────────────────────────────────────────────────────
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page(request: Request, db: Session = Depends(get_db)):
+    if db.query(User).count() > 0:
+        return RedirectResponse("/login", status_code=302)
+    return templates.TemplateResponse("setup.html", {"request": request, "error": None})
+
+
+@app.post("/setup")
+async def setup(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    if db.query(User).count() > 0:
+        return RedirectResponse("/login", status_code=302)
+    if not username.strip() or len(password) < 8:
+        return templates.TemplateResponse("setup.html", {
+            "request": request,
+            "error": "Username is required and password must be at least 8 characters.",
+        })
+    user = User(
+        username=username.strip(),
+        password_hash=_hash_password(password),
+        api_key=secrets.token_urlsafe(32),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    request.session["user_id"] = user.id
+    request.session["username"] = user.username
+    return RedirectResponse("/", status_code=302)
+
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
+async def login_page(request: Request, db: Session = Depends(get_db)):
+    if db.query(User).count() == 0:
+        return RedirectResponse("/setup", status_code=302)
     return templates.TemplateResponse("login.html", {"request": request, "error": None})
 
+
 @app.post("/login")
-async def login(request: Request, password: str = Form(...)):
-    if password == PASSWORD:
-        request.session["authenticated"] = True
-        return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request, "error": "Wrong password"})
+async def login(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.username == username).first()
+    if not user or not _verify_password(password, user.password_hash):
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "Invalid username or password.",
+        })
+    request.session["user_id"] = user.id
+    request.session["username"] = user.username
+    return RedirectResponse("/", status_code=302)
+
 
 @app.get("/logout")
 async def logout(request: Request):
     request.session.clear()
     return RedirectResponse("/login", status_code=302)
 
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, db: Session = Depends(get_db),
+                         regenerated: str = None):
+    if not _uid(request):
+        return RedirectResponse("/login", status_code=302)
+    user = db.query(User).filter(User.id == _uid(request)).first()
+    success = "API key regenerated successfully." if regenerated else None
+    return templates.TemplateResponse("settings.html", {
+        "request": request, "user": user,
+        "success": success, "error": None,
+    })
+
+
+@app.post("/settings/regenerate-key")
+async def regenerate_api_key(request: Request, db: Session = Depends(get_db)):
+    if not _uid(request):
+        return RedirectResponse("/login", status_code=302)
+    user = db.query(User).filter(User.id == _uid(request)).first()
+    user.api_key = secrets.token_urlsafe(32)
+    db.commit()
+    return RedirectResponse("/settings?regenerated=1", status_code=302)
+
+
+@app.post("/settings/change-password")
+async def change_password(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    if not _uid(request):
+        return RedirectResponse("/login", status_code=302)
+    user = db.query(User).filter(User.id == _uid(request)).first()
+    if not _verify_password(current_password, user.password_hash):
+        return templates.TemplateResponse("settings.html", {
+            "request": request, "user": user,
+            "error": "Current password is incorrect.", "success": None,
+        })
+    if len(new_password) < 8:
+        return templates.TemplateResponse("settings.html", {
+            "request": request, "user": user,
+            "error": "New password must be at least 8 characters.", "success": None,
+        })
+    user.password_hash = _hash_password(new_password)
+    db.commit()
+    return templates.TemplateResponse("settings.html", {
+        "request": request, "user": user,
+        "error": None, "success": "Password changed successfully.",
+    })
+
+
+# ── REST API ──────────────────────────────────────────────────────────────────
+@app.get("/api/metrics")
+async def api_list_metrics(user: User = Depends(get_api_user), db: Session = Depends(get_db)):
+    metrics = db.query(Metric).order_by(Metric.created_at.desc()).all()
+    return [
+        {
+            "id": m.id, "name": m.name, "unit": m.unit,
+            "graph_mode": m.graph_mode, "time_unit": m.time_unit,
+            "lower_better": bool(m.lower_better),
+            "entry_count": len(m.entries),
+        }
+        for m in metrics
+    ]
+
+
+@app.post("/api/metrics/{metric_id}/entries", status_code=201)
+async def api_add_entry(
+    metric_id: int,
+    body: EntryCreate,
+    user: User = Depends(get_api_user),
+    db: Session = Depends(get_db)
+):
+    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    if not m:
+        raise HTTPException(status_code=404, detail="Metric not found")
+    ts = _parse_recorded_at(body.recorded_at) if body.recorded_at else \
+         datetime.combine(datetime.utcnow().date(), time_type.min)
+    e = Entry(metric_id=metric_id, value=body.value, note=body.note,
+              series_label=body.series_label, recorded_at=ts)
+    db.add(e)
+    db.commit()
+    db.refresh(e)
+    return {
+        "id": e.id, "metric_id": e.metric_id, "value": e.value,
+        "recorded_at": e.recorded_at.isoformat(),
+        "note": e.note, "series_label": e.series_label,
+    }
+
+
+# ── CSV Export ─────────────────────────────────────────────────────────────────
+@app.get("/metrics/{metric_id}/export.csv")
+async def export_csv(request: Request, metric_id: int, db: Session = Depends(get_db)):
+    if not _uid(request):
+        return RedirectResponse("/login", status_code=302)
+    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    if not m:
+        raise HTTPException(status_code=404)
+    entries = sorted(m.entries, key=lambda e: e.recorded_at)
+    tu = getattr(m, 'time_unit', 'day') or 'day'
+    output = io.StringIO()
+    writer = csv.writer(output)
+    if (getattr(m, 'graph_mode', 'single') or 'single') == 'multi':
+        writer.writerow(["date", "series", "value", "note"])
+        for e in entries:
+            writer.writerow([_format_date(e.recorded_at, tu), e.series_label or '', e.value, e.note or ''])
+    else:
+        writer.writerow(["date", "value", "note"])
+        for e in entries:
+            writer.writerow([_format_date(e.recorded_at, tu), e.value, e.note or ''])
+    filename = m.name.replace(' ', '_').replace('/', '_') + ".csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, db: Session = Depends(get_db)):
-    if not request.session.get("authenticated"):
+    if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     metrics = db.query(Metric).order_by(Metric.created_at.desc()).all()
     summaries = []
@@ -161,12 +407,14 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         })
     return templates.TemplateResponse("dashboard.html", {"request": request, "summaries": summaries})
 
+
 # ── Create metric ─────────────────────────────────────────────────────────────
 @app.get("/metrics/new", response_class=HTMLResponse)
 async def new_metric_page(request: Request):
-    if not request.session.get("authenticated"):
+    if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     return templates.TemplateResponse("new_metric.html", {"request": request, "error": None})
+
 
 @app.post("/metrics/new")
 async def create_metric(
@@ -180,16 +428,18 @@ async def create_metric(
     time_unit: str = Form("day"),
     db: Session = Depends(get_db)
 ):
-    if not request.session.get("authenticated"):
+    if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     existing = db.query(Metric).filter(Metric.name == name).first()
     if existing:
-        return templates.TemplateResponse("new_metric.html", {"request": request, "error": f'Metric "{name}" already exists.'})
+        return templates.TemplateResponse("new_metric.html", {
+            "request": request,
+            "error": f'Metric "{name}" already exists.',
+        })
     if graph_mode not in ("single", "multi"):
         graph_mode = "single"
     if time_unit not in ("day", "week", "month"):
         time_unit = "day"
-    # Normalise: strip whitespace, drop blanks, deduplicate while preserving order
     if graph_mode == "multi" and series_names:
         seen, cleaned = set(), []
         for s in series_names.split(","):
@@ -208,23 +458,24 @@ async def create_metric(
     db.refresh(m)
     return RedirectResponse(f"/metrics/{m.id}", status_code=302)
 
+
 # ── Metric detail + chart ─────────────────────────────────────────────────────
 @app.get("/metrics/{metric_id}", response_class=HTMLResponse)
 async def metric_detail(request: Request, metric_id: int, db: Session = Depends(get_db)):
-    if not request.session.get("authenticated"):
+    if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     m = db.query(Metric).filter(Metric.id == metric_id).first()
     if not m:
         raise HTTPException(status_code=404, detail="Metric not found")
-    entries = sorted(m.entries, key=lambda e: e.recorded_at)
+    entries     = sorted(m.entries, key=lambda e: e.recorded_at)
+    annotations = sorted(m.annotations, key=lambda a: a.annotated_at)
 
     chart_json         = None
     series_charts_json = "[]"
     stats              = {}
     series_labels      = []
-    series_pct         = []   # per-series vs-first breakdown for multi mode
+    series_pct         = []
 
-    # Predefined series for the log dropdown; fall back to names found in entries
     raw_names = getattr(m, 'series_names', None) or ""
     defined_series = [s.strip() for s in raw_names.split(",") if s.strip()]
     if not defined_series and (getattr(m, 'graph_mode', 'single') or 'single') == 'multi':
@@ -250,17 +501,11 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
         tu = getattr(m, 'time_unit', 'day') or 'day'
 
         if graph_mode == 'multi':
-            # Collect existing series labels for datalist autocomplete
-            series_labels = sorted(set(
-                e.series_label for e in entries if e.series_label
-            ))
-
-            # Group entries by series_label
+            series_labels = sorted(set(e.series_label for e in entries if e.series_label))
             groups: dict[str, list] = defaultdict(list)
             for e in entries:
                 groups[e.series_label or 'default'].append(e)
 
-            # ── Per-series vs-first breakdown ─────────────────────────────────
             for label, s_entries in groups.items():
                 s_ys = [e.value for e in s_entries]
                 s_first, s_last = s_ys[0], s_ys[-1]
@@ -273,7 +518,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
                     "improved": (s_delta < 0 if m.lower_better else s_delta > 0),
                 })
 
-            # ── Combined chart (all series overlaid) ──────────────────────────
+            # Combined chart (all series overlaid)
             fig_combined = go.Figure()
             for i, (label, s_entries) in enumerate(groups.items()):
                 color = SERIES_COLORS[i % len(SERIES_COLORS)]
@@ -287,6 +532,14 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
                     marker=dict(size=7, color=color, line=dict(color="#0a0f1e", width=1.5)),
                     hovertemplate="<b>%{y}</b><br>%{x}<extra></extra>",
                 ))
+            for ann in annotations:
+                fig_combined.add_vline(
+                    x=_format_date(ann.annotated_at, tu),
+                    line_dash="dash", line_color="#ffab40", line_width=1.5,
+                    annotation_text=ann.label,
+                    annotation_position="top left",
+                    annotation=dict(font_size=10, font_color="#ffab40"),
+                )
             layout = _chart_layout(m.unit)
             layout["legend"] = dict(
                 bgcolor="rgba(0,0,0,0)",
@@ -296,7 +549,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
             fig_combined.update_layout(**layout)
             chart_json = json.dumps(fig_combined, cls=plotly.utils.PlotlyJSONEncoder)
 
-            # ── Separate chart per series ─────────────────────────────────────
+            # Separate chart per series
             sep_list = []
             for i, (label, s_entries) in enumerate(groups.items()):
                 color = SERIES_COLORS[i % len(SERIES_COLORS)]
@@ -315,6 +568,14 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
                 fig_sep.add_hline(y=s_best, line_dash="dot", line_color="#ff4081",
                                   annotation_text=f"Best: {s_best}",
                                   annotation_position="bottom right")
+                for ann in annotations:
+                    fig_sep.add_vline(
+                        x=_format_date(ann.annotated_at, tu),
+                        line_dash="dash", line_color="#ffab40", line_width=1.5,
+                        annotation_text=ann.label,
+                        annotation_position="top left",
+                        annotation=dict(font_size=10, font_color="#ffab40"),
+                    )
                 fig_sep.update_layout(**_chart_layout(m.unit))
                 sep_list.append({
                     "label": label,
@@ -323,7 +584,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
             series_charts_json = json.dumps(sep_list)
 
         else:
-            # ── Single mode (original behaviour) ─────────────────────────────
+            # Single mode
             xs = [_format_date(e.recorded_at, tu) for e in entries]
             fig = go.Figure()
             fig.add_trace(go.Scatter(
@@ -336,10 +597,17 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
             ))
             fig.add_hline(y=best_val, line_dash="dot", line_color="#ff4081",
                           annotation_text=f"Best: {best_val}", annotation_position="bottom right")
+            for ann in annotations:
+                fig.add_vline(
+                    x=_format_date(ann.annotated_at, tu),
+                    line_dash="dash", line_color="#ffab40", line_width=1.5,
+                    annotation_text=ann.label,
+                    annotation_position="top left",
+                    annotation=dict(font_size=10, font_color="#ffab40"),
+                )
             fig.update_layout(**_chart_layout(m.unit))
             chart_json = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
-    # Ordered list of series label strings for template iteration
     series_charts_list = [s["label"] for s in json.loads(series_charts_json)] if series_charts_json != "[]" else []
 
     return templates.TemplateResponse("metric.html", {
@@ -351,18 +619,21 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
         "series_pct": series_pct,
         "defined_series": defined_series,
         "time_unit": getattr(m, 'time_unit', 'day') or 'day',
+        "annotations": annotations,
     })
+
 
 # ── Manage predefined series (multi mode) ─────────────────────────────────────
 def _parse_series(m: Metric) -> list[str]:
     return [s.strip() for s in (m.series_names or "").split(",") if s.strip()]
+
 
 @app.post("/metrics/{metric_id}/series/add")
 async def series_add(
     request: Request, metric_id: int,
     series_name: str = Form(...), db: Session = Depends(get_db)
 ):
-    if not request.session.get("authenticated"):
+    if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     m = db.query(Metric).filter(Metric.id == metric_id).first()
     if not m:
@@ -375,12 +646,13 @@ async def series_add(
         db.commit()
     return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
 
+
 @app.post("/metrics/{metric_id}/series/remove")
 async def series_remove(
     request: Request, metric_id: int,
     series_name: str = Form(...), db: Session = Depends(get_db)
 ):
-    if not request.session.get("authenticated"):
+    if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     m = db.query(Metric).filter(Metric.id == metric_id).first()
     if not m:
@@ -389,6 +661,41 @@ async def series_remove(
     m.series_names = ",".join(names) or None
     db.commit()
     return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
+
+
+# ── Annotations ───────────────────────────────────────────────────────────────
+@app.post("/metrics/{metric_id}/annotations")
+async def add_annotation(
+    request: Request,
+    metric_id: int,
+    label: str = Form(...),
+    annotated_at: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    if not _uid(request):
+        return RedirectResponse("/login", status_code=302)
+    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    if not m:
+        raise HTTPException(status_code=404)
+    ts = _parse_recorded_at(annotated_at)
+    ann = Annotation(metric_id=metric_id, label=label.strip(), annotated_at=ts)
+    db.add(ann)
+    db.commit()
+    return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
+
+
+@app.post("/annotations/{annotation_id}/delete")
+async def delete_annotation(request: Request, annotation_id: int, db: Session = Depends(get_db)):
+    if not _uid(request):
+        return RedirectResponse("/login", status_code=302)
+    ann = db.query(Annotation).filter(Annotation.id == annotation_id).first()
+    if not ann:
+        raise HTTPException(status_code=404)
+    metric_id = ann.metric_id
+    db.delete(ann)
+    db.commit()
+    return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
+
 
 # ── Log entry ─────────────────────────────────────────────────────────────────
 @app.post("/metrics/{metric_id}/entries")
@@ -401,34 +708,24 @@ async def add_entry(
     series_label: str = Form(""),
     db: Session = Depends(get_db)
 ):
-    if not request.session.get("authenticated"):
+    if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     m = db.query(Metric).filter(Metric.id == metric_id).first()
     if not m:
         raise HTTPException(status_code=404)
-    if recorded_at:
-        if 'W' in recorded_at:
-            # Week format from <input type="week">: "2025-W08" (ISO year + ISO week)
-            d = datetime.strptime(recorded_at + '-1', "%G-W%V-%u").date()
-        elif len(recorded_at) == 7:
-            # Month format from <input type="month">: "2025-02"
-            d = date_type.fromisoformat(recorded_at + '-01')
-        else:
-            # Day format from <input type="date">: "2025-02-21"
-            d = date_type.fromisoformat(recorded_at[:10])
-        ts = datetime.combine(d, time_type.min)
-    else:
-        ts = datetime.combine(datetime.utcnow().date(), time_type.min)
-    e  = Entry(metric_id=metric_id, value=value, note=note or None, recorded_at=ts,
-               series_label=series_label or None)
+    ts = _parse_recorded_at(recorded_at) if recorded_at else \
+         datetime.combine(datetime.utcnow().date(), time_type.min)
+    e = Entry(metric_id=metric_id, value=value, note=note or None, recorded_at=ts,
+              series_label=series_label or None)
     db.add(e)
     db.commit()
     return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
 
+
 # ── Delete entry ──────────────────────────────────────────────────────────────
 @app.post("/entries/{entry_id}/delete")
 async def delete_entry(request: Request, entry_id: int, db: Session = Depends(get_db)):
-    if not request.session.get("authenticated"):
+    if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     e = db.query(Entry).filter(Entry.id == entry_id).first()
     if not e:
@@ -438,10 +735,11 @@ async def delete_entry(request: Request, entry_id: int, db: Session = Depends(ge
     db.commit()
     return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
 
+
 # ── Delete metric ─────────────────────────────────────────────────────────────
 @app.post("/metrics/{metric_id}/delete")
 async def delete_metric(request: Request, metric_id: int, db: Session = Depends(get_db)):
-    if not request.session.get("authenticated"):
+    if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     m = db.query(Metric).filter(Metric.id == metric_id).first()
     if not m:

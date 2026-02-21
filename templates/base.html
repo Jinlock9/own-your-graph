@@ -207,8 +207,12 @@
 <nav>
   <a href="/" class="nav-brand">own<span>/</span>graph</a>
   <div class="nav-links">
+    {% if request.session.get("username") %}
+    <span style="font-size:0.7rem;color:var(--text-dim);letter-spacing:0.06em;">{{ request.session.get("username") }}</span>
+    {% endif %}
     <a href="/">Dashboard</a>
     <a href="/metrics/new">+ New Metric</a>
+    <a href="/settings">Settings</a>
     <a href="/logout">Logout</a>
   </div>
 </nav>

@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Settings — own/graph{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div class="page-title"><span>//</span> Settings</div>
+</div>
+
+{% if success %}
+<div style="background:rgba(0,230,118,0.08);border:1px solid rgba(0,230,118,0.3);
+            color:var(--success);padding:0.75rem 1rem;font-size:0.82rem;margin-bottom:1.5rem;">
+  {{ success }}
+</div>
+{% endif %}
+{% if error %}
+<div class="error-msg">{{ error }}</div>
+{% endif %}
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;align-items:start;">
+
+  <!-- API Key -->
+  <div class="card">
+    <div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;
+                color:var(--accent);margin-bottom:1.2rem;">REST API Key</div>
+    <div style="font-size:0.7rem;color:var(--text-dim);margin-bottom:0.8rem;line-height:1.6;">
+      Use this key to log entries programmatically via the REST API.
+      Pass it as the <code style="color:var(--accent);">X-Api-Key</code> header.
+    </div>
+    <div style="background:var(--bg);border:1px solid var(--border);
+                padding:0.7rem 0.9rem;font-size:0.78rem;word-break:break-all;
+                color:#fff;letter-spacing:0.03em;margin-bottom:1rem;">
+      {{ user.api_key or '—' }}
+    </div>
+    <div style="font-size:0.7rem;color:var(--text-dim);margin-bottom:1rem;line-height:1.6;">
+      <strong style="color:var(--text);">Example:</strong><br>
+      <code style="color:var(--accent);">
+        curl -X POST https://yoursite.com/api/metrics/1/entries \<br>
+        &nbsp;&nbsp;-H "X-Api-Key: &lt;key&gt;" \<br>
+        &nbsp;&nbsp;-H "Content-Type: application/json" \<br>
+        &nbsp;&nbsp;-d '{"value": 42.0}'
+      </code>
+    </div>
+    <form method="post" action="/settings/regenerate-key"
+          onsubmit="return confirm('Regenerate API key? The old key will stop working immediately.')">
+      <button type="submit" class="btn btn-danger" style="width:100%;justify-content:center;">
+        ↻ Regenerate Key
+      </button>
+    </form>
+  </div>
+
+  <!-- Change Password -->
+  <div class="card">
+    <div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;
+                color:var(--accent);margin-bottom:1.2rem;">Change Password</div>
+    <form method="post" action="/settings/change-password">
+      <div class="form-group">
+        <label for="current_password">Current Password</label>
+        <input type="password" id="current_password" name="current_password"
+               placeholder="••••••••" autocomplete="current-password">
+      </div>
+      <div class="form-group">
+        <label for="new_password">New Password</label>
+        <input type="password" id="new_password" name="new_password"
+               placeholder="min 8 characters" autocomplete="new-password">
+      </div>
+      <button type="submit" class="btn" style="width:100%;justify-content:center;padding:0.7rem;">
+        Update Password →
+      </button>
+    </form>
+  </div>
+
+</div>
+
+<!-- API Reference -->
+<div class="card" style="margin-top:1.5rem;">
+  <div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;
+              color:var(--accent);margin-bottom:1rem;">API Reference</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Method</th>
+        <th>Endpoint</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="tag tag-accent">GET</span></td>
+        <td style="font-size:0.78rem;color:#fff;">/api/metrics</td>
+        <td style="font-size:0.78rem;color:var(--text-dim);">List all metrics</td>
+      </tr>
+      <tr>
+        <td><span class="tag" style="border-color:rgba(0,230,118,0.3);color:var(--success);">POST</span></td>
+        <td style="font-size:0.78rem;color:#fff;">/api/metrics/{id}/entries</td>
+        <td style="font-size:0.78rem;color:var(--text-dim);">
+          Log a new entry. JSON body: <code style="color:var(--text);">value</code> (required),
+          <code style="color:var(--text);">note</code>,
+          <code style="color:var(--text);">recorded_at</code> (YYYY-MM-DD),
+          <code style="color:var(--text);">series_label</code>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}
