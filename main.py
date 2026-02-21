@@ -45,7 +45,7 @@ class Metric(Base):
     __tablename__ = "metrics"
     id           = Column(Integer, primary_key=True, index=True)
     user_id      = Column(Integer, ForeignKey("users.id"), nullable=True)
-    name         = Column(String, unique=True, nullable=False)
+    name         = Column(String, nullable=False)
     description  = Column(Text, nullable=True)
     unit         = Column(String, nullable=True)
     lower_better = Column(Integer, default=1)
@@ -96,6 +96,58 @@ with engine.connect() as _conn:
             _conn.commit()
         except Exception:
             pass
+
+# Remove the old global UNIQUE constraint on metrics.name so that different
+# users can share the same metric name. SQLite doesn't support DROP CONSTRAINT,
+# so we recreate the table when the old unique constraint is detected.
+def _migrate_drop_metrics_name_unique():
+    if not DATABASE_URL.startswith("sqlite"):
+        # PostgreSQL supports ALTER TABLE ... DROP CONSTRAINT
+        with engine.connect() as conn:
+            for cname in ("metrics_name_key", "uq_metrics_name", "ix_metrics_name"):
+                try:
+                    conn.execute(text(f"ALTER TABLE metrics DROP CONSTRAINT IF EXISTS {cname}"))
+                    conn.commit()
+                except Exception:
+                    pass
+        return
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='metrics'")
+        ).fetchone()
+        if not row:
+            return
+        # If name column still has UNIQUE in the CREATE TABLE statement, rebuild
+        # the table without it.  PRAGMA table_info does NOT include UNIQUE so we
+        # look directly at the stored SQL.
+        if "UNIQUE" not in row[0].upper():
+            return  # already clean — nothing to do
+
+        pragma = conn.execute(text("PRAGMA table_info(metrics)")).fetchall()
+        # pragma row: (cid, name, type, notnull, dflt_value, pk)
+        col_names = [r[1] for r in pragma]
+        col_defs  = []
+        for r in pragma:
+            _, cname, ctype, notnull, dflt, pk = r
+            if pk:
+                col_defs.append(f'"{cname}" {ctype} PRIMARY KEY')
+            else:
+                defn = f'"{cname}" {ctype}'
+                if notnull:
+                    defn += " NOT NULL"
+                if dflt is not None:
+                    defn += f" DEFAULT {dflt}"
+                col_defs.append(defn)
+
+        cols_csv = ", ".join(f'"{c}"' for c in col_names)
+        conn.execute(text(f"CREATE TABLE metrics_new ({', '.join(col_defs)})"))
+        conn.execute(text(f"INSERT INTO metrics_new ({cols_csv}) SELECT {cols_csv} FROM metrics"))
+        conn.execute(text("DROP TABLE metrics"))
+        conn.execute(text("ALTER TABLE metrics_new RENAME TO metrics"))
+        conn.commit()
+
+_migrate_drop_metrics_name_unique()
 
 # Assign any metrics that pre-date multi-user support to the first user
 with SessionLocal() as _s:
@@ -661,11 +713,11 @@ async def create_metric(
 ):
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
-    existing = db.query(Metric).filter(Metric.name == name).first()
+    existing = db.query(Metric).filter(Metric.name == name, Metric.user_id == _uid(request)).first()
     if existing:
         return templates.TemplateResponse("new_metric.html", {
             "request": request,
-            "error": f'Metric "{name}" already exists.',
+            "error": f'You already have a metric named "{name}".',
         })
     if graph_mode not in ("single", "multi"):
         graph_mode = "single"
