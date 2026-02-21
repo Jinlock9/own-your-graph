@@ -1,7 +1,7 @@
 import os
 import json
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, date as date_type, time as time_type
 from typing import Optional
 
 from fastapi import FastAPI, Request, Form, Depends, HTTPException
@@ -35,6 +35,7 @@ class Metric(Base):
     lower_better = Column(Integer, default=1)           # 1 = lower is better (perf), 0 = higher is better
     graph_mode   = Column(String, default='single')     # 'single' or 'multi'
     series_names = Column(Text, nullable=True)          # comma-separated predefined series (multi mode)
+    time_unit    = Column(String, default='day')        # 'day', 'week', or 'month'
     created_at   = Column(DateTime, default=datetime.utcnow)
     entries      = relationship("Entry", back_populates="metric", cascade="all, delete-orphan")
 
@@ -56,6 +57,7 @@ with engine.connect() as _conn:
         "ALTER TABLE metrics ADD COLUMN graph_mode VARCHAR DEFAULT 'single'",
         "ALTER TABLE entries ADD COLUMN series_label VARCHAR",
         "ALTER TABLE metrics ADD COLUMN series_names TEXT",
+        "ALTER TABLE metrics ADD COLUMN time_unit VARCHAR DEFAULT 'day'",
     ]:
         try:
             _conn.execute(text(_stmt))
@@ -65,6 +67,13 @@ with engine.connect() as _conn:
 
 # ── Series colour palette ──────────────────────────────────────────────────────
 SERIES_COLORS = ["#00e5ff", "#ff4081", "#00e676", "#ffab40", "#ce93d8", "#ff6e40", "#40c4ff"]
+
+def _format_date(dt: datetime, time_unit: str) -> str:
+    if time_unit == 'week':
+        return dt.strftime("%Y-W%W")
+    elif time_unit == 'month':
+        return dt.strftime("%Y-%m")
+    return dt.strftime("%Y-%m-%d")
 
 def _chart_layout(unit: str | None) -> dict:
     return dict(
@@ -168,6 +177,7 @@ async def create_metric(
     lower_better: int = Form(1),
     graph_mode: str = Form("single"),
     series_names: str = Form(""),
+    time_unit: str = Form("day"),
     db: Session = Depends(get_db)
 ):
     if not request.session.get("authenticated"):
@@ -177,6 +187,8 @@ async def create_metric(
         return templates.TemplateResponse("new_metric.html", {"request": request, "error": f'Metric "{name}" already exists.'})
     if graph_mode not in ("single", "multi"):
         graph_mode = "single"
+    if time_unit not in ("day", "week", "month"):
+        time_unit = "day"
     # Normalise: strip whitespace, drop blanks, deduplicate while preserving order
     if graph_mode == "multi" and series_names:
         seen, cleaned = set(), []
@@ -189,7 +201,8 @@ async def create_metric(
     else:
         series_names = None
     m = Metric(name=name, description=description or None, unit=unit or None,
-               lower_better=lower_better, graph_mode=graph_mode, series_names=series_names)
+               lower_better=lower_better, graph_mode=graph_mode, series_names=series_names,
+               time_unit=time_unit)
     db.add(m)
     db.commit()
     db.refresh(m)
@@ -234,6 +247,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
         }
 
         graph_mode = getattr(m, 'graph_mode', 'single') or 'single'
+        tu = getattr(m, 'time_unit', 'day') or 'day'
 
         if graph_mode == 'multi':
             # Collect existing series labels for datalist autocomplete
@@ -263,7 +277,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
             fig_combined = go.Figure()
             for i, (label, s_entries) in enumerate(groups.items()):
                 color = SERIES_COLORS[i % len(SERIES_COLORS)]
-                xs = [e.recorded_at.strftime("%Y-%m-%d %H:%M") for e in s_entries]
+                xs = [_format_date(e.recorded_at, tu) for e in s_entries]
                 ys = [e.value for e in s_entries]
                 fig_combined.add_trace(go.Scatter(
                     x=xs, y=ys,
@@ -286,7 +300,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
             sep_list = []
             for i, (label, s_entries) in enumerate(groups.items()):
                 color = SERIES_COLORS[i % len(SERIES_COLORS)]
-                xs = [e.recorded_at.strftime("%Y-%m-%d %H:%M") for e in s_entries]
+                xs = [_format_date(e.recorded_at, tu) for e in s_entries]
                 ys = [e.value for e in s_entries]
                 fig_sep = go.Figure()
                 fig_sep.add_trace(go.Scatter(
@@ -310,7 +324,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
 
         else:
             # ── Single mode (original behaviour) ─────────────────────────────
-            xs = [e.recorded_at.strftime("%Y-%m-%d %H:%M") for e in entries]
+            xs = [_format_date(e.recorded_at, tu) for e in entries]
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=xs, y=ys_all,
@@ -336,6 +350,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
         "series_labels": series_labels,
         "series_pct": series_pct,
         "defined_series": defined_series,
+        "time_unit": getattr(m, 'time_unit', 'day') or 'day',
     })
 
 # ── Manage predefined series (multi mode) ─────────────────────────────────────
@@ -391,7 +406,11 @@ async def add_entry(
     m = db.query(Metric).filter(Metric.id == metric_id).first()
     if not m:
         raise HTTPException(status_code=404)
-    ts = datetime.fromisoformat(recorded_at) if recorded_at else datetime.utcnow()
+    if recorded_at:
+        d = date_type.fromisoformat(recorded_at[:10])
+        ts = datetime.combine(d, time_type.min)
+    else:
+        ts = datetime.combine(datetime.utcnow().date(), time_type.min)
     e  = Entry(metric_id=metric_id, value=value, note=note or None, recorded_at=ts,
                series_label=series_label or None)
     db.add(e)

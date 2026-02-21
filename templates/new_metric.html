@@ -83,6 +83,31 @@
         </select>
       </div>
 
+      <!-- Time Unit -->
+      <div class="form-group">
+        <label>Time Unit</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;">
+          <label class="mode-card selected" id="card-day">
+            <input type="radio" name="time_unit" value="day" checked
+                   style="display:none;" onchange="selectTimeUnit('day')">
+            <div class="mode-card-title">Day</div>
+            <div class="mode-card-desc">Track a value for each day.</div>
+          </label>
+          <label class="mode-card" id="card-week">
+            <input type="radio" name="time_unit" value="week"
+                   style="display:none;" onchange="selectTimeUnit('week')">
+            <div class="mode-card-title">Week</div>
+            <div class="mode-card-desc">Track a value per week.</div>
+          </label>
+          <label class="mode-card" id="card-month">
+            <input type="radio" name="time_unit" value="month"
+                   style="display:none;" onchange="selectTimeUnit('month')">
+            <div class="mode-card-title">Month</div>
+            <div class="mode-card-desc">Track a value per month.</div>
+          </label>
+        </div>
+      </div>
+
       <!-- Graph Mode -->
       <div class="form-group">
         <label>Graph Mode</label>
@@ -129,6 +154,20 @@
 
 <script>
   let seriesList = [];
+
+  function selectTimeUnit(unit) {
+    ['day', 'week', 'month'].forEach(u => {
+      document.getElementById('card-' + u).classList.toggle('selected', u === unit);
+    });
+  }
+
+  ['card-day', 'card-week', 'card-month'].forEach(id => {
+    document.getElementById(id).addEventListener('click', function() {
+      const radio = this.querySelector('input[type="radio"]');
+      radio.checked = true;
+      selectTimeUnit(radio.value);
+    });
+  });
 
   function selectMode(mode) {
     document.getElementById('card-single').classList.toggle('selected', mode === 'single');
