@@ -38,7 +38,7 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     api_key       = Column(String, unique=True, nullable=True)
     created_at    = Column(DateTime, default=datetime.utcnow)
-    metrics       = relationship("Metric", back_populates="owner")
+    metrics       = relationship("Metric", back_populates="owner", cascade="all, delete-orphan")
 
 
 class Metric(Base):
@@ -574,6 +574,26 @@ async def change_password(
         "request": request, "user": user,
         "error": None, "success": "Password changed successfully.",
     })
+
+
+@app.post("/settings/delete-account")
+async def delete_account(
+    request: Request,
+    confirm_password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    if not _uid(request):
+        return RedirectResponse("/login", status_code=302)
+    user = db.query(User).filter(User.id == _uid(request)).first()
+    if not _verify_password(confirm_password, user.password_hash):
+        return templates.TemplateResponse("settings.html", {
+            "request": request, "user": user,
+            "error": "Incorrect password — account not deleted.", "success": None,
+        })
+    db.delete(user)   # cascades → metrics → entries + annotations
+    db.commit()
+    request.session.clear()
+    return RedirectResponse("/register", status_code=302)
 
 
 # ── REST API ──────────────────────────────────────────────────────────────────

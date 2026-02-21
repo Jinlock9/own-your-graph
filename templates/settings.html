@@ -70,6 +70,32 @@
 
 </div>
 
+<!-- Danger Zone -->
+<div class="card" style="margin-top:1.5rem;border-color:rgba(255,64,129,0.2);">
+  <div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;
+              color:var(--accent2);margin-bottom:1rem;">Danger Zone</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;align-items:start;">
+    <div>
+      <div style="font-size:0.8rem;color:#fff;margin-bottom:0.3rem;font-weight:500;">Delete Account</div>
+      <div style="font-size:0.72rem;color:var(--text-dim);line-height:1.6;">
+        Permanently deletes your account and <strong style="color:var(--accent2);">all</strong>
+        metrics, entries, and annotations. This cannot be undone.
+      </div>
+    </div>
+    <form method="post" action="/settings/delete-account"
+          onsubmit="return confirm('This will permanently delete your account and all data. Are you sure?')">
+      <div class="form-group">
+        <label for="confirm_password">Confirm with your password</label>
+        <input type="password" id="confirm_password" name="confirm_password"
+               placeholder="••••••••" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="btn btn-danger" style="width:100%;justify-content:center;">
+        Delete My Account
+      </button>
+    </form>
+  </div>
+</div>
+
 <!-- API Reference -->
 <div class="card" style="margin-top:1.5rem;">
   <div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;
