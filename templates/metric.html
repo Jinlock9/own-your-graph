@@ -56,8 +56,20 @@
       {% endif %}
     </div>
   </div>
-  <div style="display:flex;gap:0.7rem;align-items:center;">
+  <div style="display:flex;gap:0.7rem;align-items:center;flex-wrap:wrap;">
     <a href="/" class="btn">← Back</a>
+    <a href="/metrics/{{ metric.id }}/export.csv" class="btn" title="Download all entries as CSV">↓ CSV</a>
+    <!-- Visibility toggle -->
+    <form method="post" action="/metrics/{{ metric.id }}/toggle-visibility" style="display:inline;">
+      <button type="submit" class="btn"
+              style="{% if metric.is_public %}border-color:rgba(0,230,118,0.45);color:var(--success);{% else %}color:var(--text-dim);{% endif %}">
+        {% if metric.is_public %}Public{% else %}Private{% endif %}
+      </button>
+    </form>
+    {% if share_url %}
+    <a href="{{ share_url }}" target="_blank" class="btn"
+       style="font-size:0.7rem;color:var(--text-dim);" title="Open public view">Share</a>
+    {% endif %}
     <form method="post" action="/metrics/{{ metric.id }}/delete"
           onsubmit="return confirm('Delete this metric and all its data?')">
       <button type="submit" class="btn btn-danger">Delete</button>
@@ -309,6 +321,107 @@
       </form>
     </div>
     {% endif %}
+
+    <!-- Annotations panel -->
+    <div style="border-top:1px solid var(--border);margin-top:1.2rem;padding-top:1rem;">
+      <div style="font-size:0.65rem;letter-spacing:0.1em;text-transform:uppercase;
+                  color:var(--text-dim);margin-bottom:0.55rem;">Annotations</div>
+
+      <!-- Existing annotations -->
+      {% if annotations %}
+      <div style="margin-bottom:0.6rem;">
+        {% for ann in annotations %}
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:0.22rem 0;border-bottom:1px solid rgba(255,255,255,0.04);
+                    {% if loop.last %}border-bottom:none;{% endif %}">
+          <div>
+            <span style="font-size:0.78rem;color:var(--warn);font-weight:500;">{{ ann.label }}</span>
+            <span style="font-size:0.65rem;color:var(--text-dim);margin-left:0.5rem;">
+              {% if time_unit == 'week' %}{{ ann.annotated_at.strftime('%G-W%V') }}
+              {% elif time_unit == 'month' %}{{ ann.annotated_at.strftime('%Y-%m') }}
+              {% else %}{{ ann.annotated_at.strftime('%Y-%m-%d') }}{% endif %}
+            </span>
+          </div>
+          <form method="post" action="/annotations/{{ ann.id }}/delete" style="display:inline;">
+            <button type="submit" class="btn btn-danger"
+                    style="padding:0.2rem 0.5rem;font-size:0.6rem;">✕</button>
+          </form>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <!-- Add annotation -->
+      <form method="post" action="/metrics/{{ metric.id }}/annotations"
+            style="display:flex;flex-direction:column;gap:0.4rem;">
+        <input type="text" name="label" placeholder="Label (e.g. 'Switched to v2')"
+               style="font-size:0.78rem;padding:0.38rem 0.6rem;" required>
+        {% if time_unit == 'month' %}
+        <input type="text" id="ann_month_display" placeholder="Pick a month" readonly
+               style="font-size:0.78rem;padding:0.38rem 0.6rem;cursor:pointer;">
+        <input type="hidden" id="annotated_at" name="annotated_at">
+        <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            if (typeof flatpickr !== 'undefined') {
+              flatpickr('#ann_month_display', {
+                plugins: [new monthSelectPlugin({ shorthand: false, dateFormat: 'Y-m', altFormat: 'F Y' })],
+                defaultDate: new Date(),
+                onChange: function(dates) {
+                  if (dates.length) {
+                    const d = dates[0];
+                    const mm = String(d.getMonth()+1).padStart(2,'0');
+                    document.getElementById('annotated_at').value = d.getFullYear()+'-'+mm;
+                    document.getElementById('ann_month_display').value =
+                      d.toLocaleDateString('en-US',{month:'long',year:'numeric'});
+                  }
+                }
+              });
+            }
+          });
+        </script>
+        {% elif time_unit == 'week' %}
+        <input type="text" id="ann_week_display" placeholder="Pick a week" readonly
+               style="font-size:0.78rem;padding:0.38rem 0.6rem;cursor:pointer;">
+        <input type="hidden" id="annotated_at" name="annotated_at">
+        <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            if (typeof flatpickr !== 'undefined') {
+              flatpickr('#ann_week_display', {
+                weekNumbers: true,
+                defaultDate: new Date(),
+                onChange: function(dates) {
+                  if (dates.length) {
+                    const date = dates[0];
+                    const u = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+                    const day = u.getUTCDay() || 7;
+                    u.setUTCDate(u.getUTCDate() + 4 - day);
+                    const jan1 = new Date(Date.UTC(u.getUTCFullYear(),0,1));
+                    const week = Math.ceil((((u-jan1)/86400000)+1)/7);
+                    document.getElementById('annotated_at').value = u.getUTCFullYear()+'-W'+String(week).padStart(2,'0');
+                    document.getElementById('ann_week_display').value = 'Week '+week+', '+u.getUTCFullYear();
+                  }
+                }
+              });
+            }
+          });
+        </script>
+        {% else %}
+        <input type="text" id="ann_date" name="annotated_at" placeholder="Pick a date" readonly
+               style="font-size:0.78rem;padding:0.38rem 0.6rem;cursor:pointer;">
+        <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            if (typeof flatpickr !== 'undefined') {
+              flatpickr('#ann_date', { defaultDate: new Date(), dateFormat: 'Y-m-d' });
+            }
+          });
+        </script>
+        {% endif %}
+        <button type="submit" class="btn"
+                style="font-size:0.72rem;padding:0.38rem 0.7rem;justify-content:center;">
+          + Add Annotation
+        </button>
+      </form>
+    </div>
   </div>
 
   <!-- Entry table -->
