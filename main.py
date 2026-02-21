@@ -70,7 +70,7 @@ SERIES_COLORS = ["#00e5ff", "#ff4081", "#00e676", "#ffab40", "#ce93d8", "#ff6e40
 
 def _format_date(dt: datetime, time_unit: str) -> str:
     if time_unit == 'week':
-        return dt.strftime("%Y-W%W")
+        return dt.strftime("%G-W%V")   # ISO year + ISO week, matches <input type="week">
     elif time_unit == 'month':
         return dt.strftime("%Y-%m")
     return dt.strftime("%Y-%m-%d")
@@ -407,7 +407,15 @@ async def add_entry(
     if not m:
         raise HTTPException(status_code=404)
     if recorded_at:
-        d = date_type.fromisoformat(recorded_at[:10])
+        if 'W' in recorded_at:
+            # Week format from <input type="week">: "2025-W08" (ISO year + ISO week)
+            d = datetime.strptime(recorded_at + '-1', "%G-W%V-%u").date()
+        elif len(recorded_at) == 7:
+            # Month format from <input type="month">: "2025-02"
+            d = date_type.fromisoformat(recorded_at + '-01')
+        else:
+            # Day format from <input type="date">: "2025-02-21"
+            d = date_type.fromisoformat(recorded_at[:10])
         ts = datetime.combine(d, time_type.min)
     else:
         ts = datetime.combine(datetime.utcnow().date(), time_type.min)

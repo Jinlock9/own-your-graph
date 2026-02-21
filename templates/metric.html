@@ -180,18 +180,44 @@
         <input type="number" id="value" name="value" step="any" placeholder="e.g. 482930" required>
       </div>
       <div class="form-group">
+        {% if time_unit == 'week' %}
+        <label for="recorded_at">Week</label>
+        <input type="week" id="recorded_at" name="recorded_at">
+        {% elif time_unit == 'month' %}
+        <label for="recorded_at">Month</label>
+        <input type="month" id="recorded_at" name="recorded_at">
+        {% else %}
         <label for="recorded_at">Date</label>
         <input type="date" id="recorded_at" name="recorded_at">
+        {% endif %}
           <script>
             (function() {
               const t = new Date();
+              const timeUnit = '{{ time_unit }}';
               const yyyy = t.getFullYear();
               const mm = String(t.getMonth() + 1).padStart(2, '0');
               const dd = String(t.getDate()).padStart(2, '0');
-              document.getElementById('recorded_at').value = `${yyyy}-${mm}-${dd}`;
+              if (timeUnit === 'week') {
+                // Compute ISO week number
+                const d = new Date(Date.UTC(yyyy, t.getMonth(), t.getDate()));
+                const dayNum = d.getUTCDay() || 7;
+                d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+                const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+                const wk = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+                document.getElementById('recorded_at').value =
+                  `${d.getUTCFullYear()}-W${String(wk).padStart(2, '0')}`;
+              } else if (timeUnit === 'month') {
+                document.getElementById('recorded_at').value = `${yyyy}-${mm}`;
+              } else {
+                document.getElementById('recorded_at').value = `${yyyy}-${mm}-${dd}`;
+              }
             })();
           </script>
-        <div style="font-size:0.65rem;color:var(--text-dim);margin-top:0.3rem;">Leave blank for today</div>
+        <div style="font-size:0.65rem;color:var(--text-dim);margin-top:0.3rem;">
+          {% if time_unit == 'week' %}Leave blank for this week
+          {% elif time_unit == 'month' %}Leave blank for this month
+          {% else %}Leave blank for today{% endif %}
+        </div>
       </div>
       <div class="form-group">
         <label for="note">Note</label>
@@ -272,7 +298,9 @@
             {% endif %}
             <td style="font-weight:500;color:#fff;">{{ e.value }}</td>
             <td style="color:var(--text-dim);font-size:0.78rem;">
-              {{ e.recorded_at.strftime('%Y-%m-%d') }}
+              {% if time_unit == 'week' %}{{ e.recorded_at.strftime('%G-W%V') }}
+              {% elif time_unit == 'month' %}{{ e.recorded_at.strftime('%Y-%m') }}
+              {% else %}{{ e.recorded_at.strftime('%Y-%m-%d') }}{% endif %}
             </td>
             <td style="color:var(--text-dim);font-size:0.78rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
               {{ e.note or '—' }}
