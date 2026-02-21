@@ -123,7 +123,31 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         best    = min(e.value for e in entries) if entries and m.lower_better else (max(e.value for e in entries) if entries else None)
         first   = entries[0].value if entries else None
         pct     = ((latest - first) / first * 100) if (first is not None and first != 0 and latest is not None) else None
-        summaries.append({"metric": m, "count": len(entries), "latest": latest, "best": best, "first": first, "pct": pct})
+
+        # Per-series breakdown for multi-graph mode
+        series_summary = []
+        if (getattr(m, 'graph_mode', 'single') or 'single') == 'multi' and entries:
+            groups: dict[str, list] = defaultdict(list)
+            for e in entries:
+                groups[e.series_label or 'default'].append(e)
+            for label, s_entries in groups.items():
+                s_ys     = [e.value for e in s_entries]
+                s_latest = s_ys[-1]
+                s_first  = s_ys[0]
+                s_pct    = ((s_latest - s_first) / s_first * 100) if s_first != 0 else 0
+                series_summary.append({
+                    "label":    label,
+                    "latest":   s_latest,
+                    "pct":      s_pct,
+                    "improved": (s_pct < 0) if m.lower_better else (s_pct > 0),
+                    "count":    len(s_entries),
+                })
+
+        summaries.append({
+            "metric": m, "count": len(entries),
+            "latest": latest, "best": best, "first": first, "pct": pct,
+            "series_summary": series_summary,
+        })
     return templates.TemplateResponse("dashboard.html", {"request": request, "summaries": summaries})
 
 # ── Create metric ─────────────────────────────────────────────────────────────
