@@ -17,7 +17,6 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 import plotly.graph_objects as go
 import plotly.utils
-from itsdangerous import URLSafeTimedSerializer
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel
 
@@ -39,19 +38,23 @@ class User(Base):
     password_hash = Column(String, nullable=False)
     api_key       = Column(String, unique=True, nullable=True)
     created_at    = Column(DateTime, default=datetime.utcnow)
+    metrics       = relationship("Metric", back_populates="owner")
 
 
 class Metric(Base):
     __tablename__ = "metrics"
     id           = Column(Integer, primary_key=True, index=True)
+    user_id      = Column(Integer, ForeignKey("users.id"), nullable=True)
     name         = Column(String, unique=True, nullable=False)
     description  = Column(Text, nullable=True)
-    unit         = Column(String, nullable=True)        # e.g. "cycles", "kg"
-    lower_better = Column(Integer, default=1)           # 1 = lower is better (perf), 0 = higher is better
-    graph_mode   = Column(String, default='single')     # 'single' or 'multi'
-    series_names = Column(Text, nullable=True)          # comma-separated predefined series (multi mode)
-    time_unit    = Column(String, default='day')        # 'day', 'week', or 'month'
+    unit         = Column(String, nullable=True)
+    lower_better = Column(Integer, default=1)
+    graph_mode   = Column(String, default='single')    # 'single' or 'multi'
+    series_names = Column(Text, nullable=True)          # comma-separated
+    time_unit    = Column(String, default='day')        # 'day', 'week', 'month'
+    is_public    = Column(Integer, default=0)           # 0=private, 1=public
     created_at   = Column(DateTime, default=datetime.utcnow)
+    owner        = relationship("User", back_populates="metrics")
     entries      = relationship("Entry", back_populates="metric", cascade="all, delete-orphan")
     annotations  = relationship("Annotation", back_populates="metric", cascade="all, delete-orphan")
 
@@ -62,7 +65,7 @@ class Entry(Base):
     metric_id    = Column(Integer, ForeignKey("metrics.id"), nullable=False)
     value        = Column(Float, nullable=False)
     note         = Column(Text, nullable=True)
-    series_label = Column(String, nullable=True)       # used in multi-graph mode
+    series_label = Column(String, nullable=True)
     recorded_at  = Column(DateTime, default=datetime.utcnow)
     metric       = relationship("Metric", back_populates="entries")
 
@@ -78,19 +81,28 @@ class Annotation(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# ── Schema migrations (safe: silently skips if column already exists) ─────────
+# ── Schema migrations ─────────────────────────────────────────────────────────
 with engine.connect() as _conn:
     for _stmt in [
         "ALTER TABLE metrics ADD COLUMN graph_mode VARCHAR DEFAULT 'single'",
         "ALTER TABLE entries ADD COLUMN series_label VARCHAR",
         "ALTER TABLE metrics ADD COLUMN series_names TEXT",
         "ALTER TABLE metrics ADD COLUMN time_unit VARCHAR DEFAULT 'day'",
+        "ALTER TABLE metrics ADD COLUMN user_id INTEGER REFERENCES users(id)",
+        "ALTER TABLE metrics ADD COLUMN is_public INTEGER DEFAULT 0",
     ]:
         try:
             _conn.execute(text(_stmt))
             _conn.commit()
         except Exception:
-            pass  # column already exists
+            pass
+
+# Assign any metrics that pre-date multi-user support to the first user
+with SessionLocal() as _s:
+    _first = _s.query(User).order_by(User.id).first()
+    if _first:
+        _s.query(Metric).filter(Metric.user_id == None).update({"user_id": _first.id})
+        _s.commit()
 
 # ── Password helpers ───────────────────────────────────────────────────────────
 def _hash_password(password: str) -> str:
@@ -114,14 +126,13 @@ SERIES_COLORS = ["#00e5ff", "#ff4081", "#00e676", "#ffab40", "#ce93d8", "#ff6e40
 
 def _format_date(dt: datetime, time_unit: str) -> str:
     if time_unit == 'week':
-        return dt.strftime("%G-W%V")   # ISO year + ISO week
+        return dt.strftime("%G-W%V")
     elif time_unit == 'month':
         return dt.strftime("%Y-%m")
     return dt.strftime("%Y-%m-%d")
 
 
 def _parse_recorded_at(ra: str) -> datetime:
-    """Parse date string (day/week/month format) into a datetime."""
     if 'W' in ra:
         d = datetime.strptime(ra + '-1', "%G-W%V-%u").date()
     elif len(ra) == 7:
@@ -142,6 +153,181 @@ def _chart_layout(unit: str | None) -> dict:
         margin=dict(l=50, r=30, t=30, b=50),
         hovermode="x unified",
     )
+
+
+# ── Chart + stats computation (shared by private and public views) ─────────────
+def _compute_metric_view_data(m: Metric, entries: list, annotations: list) -> dict:
+    """Build Plotly charts and summary stats for a metric. Pure function — no DB calls."""
+    chart_json         = None
+    series_charts_json = "[]"
+    stats              = {}
+    series_labels      = []
+    series_pct         = []
+
+    raw_names = getattr(m, 'series_names', None) or ""
+    defined_series = [s.strip() for s in raw_names.split(",") if s.strip()]
+    if not defined_series and (getattr(m, 'graph_mode', 'single') or 'single') == 'multi':
+        defined_series = sorted(set(e.series_label for e in entries if e.series_label))
+
+    if entries:
+        ys_all   = [e.value for e in entries]
+        best_val = min(ys_all) if m.lower_better else max(ys_all)
+        first, last = ys_all[0], ys_all[-1]
+        delta = last - first
+        pct   = (delta / first * 100) if first != 0 else 0
+        stats = {
+            "count":    len(entries),
+            "latest":   last,
+            "best":     best_val,
+            "first":    first,
+            "delta":    delta,
+            "pct":      pct,
+            "improved": (delta < 0 if m.lower_better else delta > 0),
+        }
+
+        graph_mode = getattr(m, 'graph_mode', 'single') or 'single'
+        tu = getattr(m, 'time_unit', 'day') or 'day'
+
+        if graph_mode == 'multi':
+            series_labels = sorted(set(e.series_label for e in entries if e.series_label))
+            groups: dict[str, list] = defaultdict(list)
+            for e in entries:
+                groups[e.series_label or 'default'].append(e)
+
+            for label, s_entries in groups.items():
+                s_ys = [e.value for e in s_entries]
+                s_first, s_last = s_ys[0], s_ys[-1]
+                s_delta = s_last - s_first
+                s_pct   = (s_delta / s_first * 100) if s_first != 0 else 0
+                series_pct.append({
+                    "label":    label,
+                    "delta":    s_delta,
+                    "pct":      s_pct,
+                    "improved": (s_delta < 0 if m.lower_better else s_delta > 0),
+                })
+
+            fig_combined = go.Figure()
+            for i, (label, s_entries) in enumerate(groups.items()):
+                color = SERIES_COLORS[i % len(SERIES_COLORS)]
+                xs = [_format_date(e.recorded_at, tu) for e in s_entries]
+                ys = [e.value for e in s_entries]
+                fig_combined.add_trace(go.Scatter(
+                    x=xs, y=ys, mode="lines+markers", name=label,
+                    line=dict(color=color, width=2),
+                    marker=dict(size=7, color=color, line=dict(color="#0a0f1e", width=1.5)),
+                    hovertemplate="<b>%{y}</b><br>%{x}<extra></extra>",
+                ))
+            for ann in annotations:
+                fig_combined.add_vline(
+                    x=_format_date(ann.annotated_at, tu),
+                    line_dash="dash", line_color="#ffab40", line_width=1.5,
+                    annotation_text=ann.label, annotation_position="top left",
+                    annotation=dict(font_size=10, font_color="#ffab40"),
+                )
+            layout = _chart_layout(m.unit)
+            layout["legend"] = dict(bgcolor="rgba(0,0,0,0)",
+                                    bordercolor="rgba(255,255,255,0.1)", borderwidth=1)
+            fig_combined.update_layout(**layout)
+            chart_json = json.dumps(fig_combined, cls=plotly.utils.PlotlyJSONEncoder)
+
+            sep_list = []
+            for i, (label, s_entries) in enumerate(groups.items()):
+                color = SERIES_COLORS[i % len(SERIES_COLORS)]
+                xs = [_format_date(e.recorded_at, tu) for e in s_entries]
+                ys = [e.value for e in s_entries]
+                fig_sep = go.Figure()
+                fig_sep.add_trace(go.Scatter(
+                    x=xs, y=ys, mode="lines+markers", name=label,
+                    line=dict(color=color, width=2),
+                    marker=dict(size=7, color=color, line=dict(color="#0a0f1e", width=1.5)),
+                    hovertemplate="<b>%{y}</b><br>%{x}<extra></extra>",
+                ))
+                s_best = min(ys) if m.lower_better else max(ys)
+                fig_sep.add_hline(y=s_best, line_dash="dot", line_color="#ff4081",
+                                  annotation_text=f"Best: {s_best}",
+                                  annotation_position="bottom right")
+                for ann in annotations:
+                    fig_sep.add_vline(
+                        x=_format_date(ann.annotated_at, tu),
+                        line_dash="dash", line_color="#ffab40", line_width=1.5,
+                        annotation_text=ann.label, annotation_position="top left",
+                        annotation=dict(font_size=10, font_color="#ffab40"),
+                    )
+                fig_sep.update_layout(**_chart_layout(m.unit))
+                sep_list.append({
+                    "label": label,
+                    "chartData": json.loads(json.dumps(fig_sep, cls=plotly.utils.PlotlyJSONEncoder)),
+                })
+            series_charts_json = json.dumps(sep_list)
+
+        else:
+            xs = [_format_date(e.recorded_at, tu) for e in entries]
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys_all, mode="lines+markers", name=m.name,
+                line=dict(color="#00e5ff", width=2),
+                marker=dict(size=7, color="#00e5ff", line=dict(color="#0a0f1e", width=1.5)),
+                hovertemplate="<b>%{y}</b><br>%{x}<extra></extra>",
+            ))
+            fig.add_hline(y=best_val, line_dash="dot", line_color="#ff4081",
+                          annotation_text=f"Best: {best_val}", annotation_position="bottom right")
+            for ann in annotations:
+                fig.add_vline(
+                    x=_format_date(ann.annotated_at, tu),
+                    line_dash="dash", line_color="#ffab40", line_width=1.5,
+                    annotation_text=ann.label, annotation_position="top left",
+                    annotation=dict(font_size=10, font_color="#ffab40"),
+                )
+            fig.update_layout(**_chart_layout(m.unit))
+            chart_json = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
+
+    series_charts_list = ([s["label"] for s in json.loads(series_charts_json)]
+                          if series_charts_json != "[]" else [])
+    return {
+        "chart_json":         chart_json,
+        "series_charts_json": series_charts_json,
+        "series_charts_list": series_charts_list,
+        "stats":              stats,
+        "series_labels":      series_labels,
+        "series_pct":         series_pct,
+        "defined_series":     defined_series,
+        "time_unit":          getattr(m, 'time_unit', 'day') or 'day',
+    }
+
+
+# ── Dashboard summaries helper ─────────────────────────────────────────────────
+def _compute_summaries(metrics: list) -> list:
+    summaries = []
+    for m in metrics:
+        entries = sorted(m.entries, key=lambda e: e.recorded_at)
+        latest  = entries[-1].value if entries else None
+        best    = (min(e.value for e in entries) if entries and m.lower_better
+                   else (max(e.value for e in entries) if entries else None))
+        first   = entries[0].value if entries else None
+        pct     = ((latest - first) / first * 100
+                   if (first is not None and first != 0 and latest is not None) else None)
+        series_summary = []
+        if (getattr(m, 'graph_mode', 'single') or 'single') == 'multi' and entries:
+            groups: dict[str, list] = defaultdict(list)
+            for e in entries:
+                groups[e.series_label or 'default'].append(e)
+            for label, s_entries in groups.items():
+                s_ys = [e.value for e in s_entries]
+                s_latest, s_first = s_ys[-1], s_ys[0]
+                s_pct = ((s_latest - s_first) / s_first * 100) if s_first != 0 else 0
+                series_summary.append({
+                    "label":    label,
+                    "latest":   s_latest,
+                    "pct":      s_pct,
+                    "improved": (s_pct < 0) if m.lower_better else (s_pct > 0),
+                    "count":    len(s_entries),
+                })
+        summaries.append({
+            "metric": m, "count": len(entries),
+            "latest": latest, "best": best, "first": first, "pct": pct,
+            "series_summary": series_summary,
+        })
+    return summaries
 
 
 # ── App setup ─────────────────────────────────────────────────────────────────
@@ -177,11 +363,11 @@ def get_api_user(x_api_key: str = Header(None), db: Session = Depends(get_db)):
 class EntryCreate(BaseModel):
     value: float
     note: Optional[str] = None
-    recorded_at: Optional[str] = None   # "YYYY-MM-DD" | "YYYY-Www" | "YYYY-MM"
+    recorded_at: Optional[str] = None
     series_label: Optional[str] = None
 
 
-# ── First-time setup ───────────────────────────────────────────────────────────
+# ── First-time setup (shown only when no accounts exist) ──────────────────────
 @app.get("/setup", response_class=HTMLResponse)
 async def setup_page(request: Request, db: Session = Depends(get_db)):
     if db.query(User).count() > 0:
@@ -203,11 +389,46 @@ async def setup(
             "request": request,
             "error": "Username is required and password must be at least 8 characters.",
         })
-    user = User(
-        username=username.strip(),
-        password_hash=_hash_password(password),
-        api_key=secrets.token_urlsafe(32),
-    )
+    user = User(username=username.strip(), password_hash=_hash_password(password),
+                api_key=secrets.token_urlsafe(32))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    request.session["user_id"] = user.id
+    request.session["username"] = user.username
+    return RedirectResponse("/", status_code=302)
+
+
+# ── Open registration (always available) ──────────────────────────────────────
+@app.get("/register", response_class=HTMLResponse)
+async def register_page(request: Request, db: Session = Depends(get_db)):
+    if db.query(User).count() == 0:
+        return RedirectResponse("/setup", status_code=302)
+    return templates.TemplateResponse("register.html", {"request": request, "error": None})
+
+
+@app.post("/register")
+async def register(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    if db.query(User).count() == 0:
+        return RedirectResponse("/setup", status_code=302)
+    username = username.strip()
+    if not username or len(password) < 8:
+        return templates.TemplateResponse("register.html", {
+            "request": request,
+            "error": "Username is required and password must be at least 8 characters.",
+        })
+    if db.query(User).filter(User.username == username).first():
+        return templates.TemplateResponse("register.html", {
+            "request": request,
+            "error": "That username is already taken.",
+        })
+    user = User(username=username, password_hash=_hash_password(password),
+                api_key=secrets.token_urlsafe(32))
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -303,14 +524,12 @@ async def change_password(
 # ── REST API ──────────────────────────────────────────────────────────────────
 @app.get("/api/metrics")
 async def api_list_metrics(user: User = Depends(get_api_user), db: Session = Depends(get_db)):
-    metrics = db.query(Metric).order_by(Metric.created_at.desc()).all()
+    metrics = db.query(Metric).filter(Metric.user_id == user.id).order_by(Metric.created_at.desc()).all()
     return [
-        {
-            "id": m.id, "name": m.name, "unit": m.unit,
-            "graph_mode": m.graph_mode, "time_unit": m.time_unit,
-            "lower_better": bool(m.lower_better),
-            "entry_count": len(m.entries),
-        }
+        {"id": m.id, "name": m.name, "unit": m.unit,
+         "graph_mode": m.graph_mode, "time_unit": m.time_unit,
+         "lower_better": bool(m.lower_better), "is_public": bool(m.is_public),
+         "entry_count": len(m.entries)}
         for m in metrics
     ]
 
@@ -322,21 +541,19 @@ async def api_add_entry(
     user: User = Depends(get_api_user),
     db: Session = Depends(get_db)
 ):
-    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    m = db.query(Metric).filter(Metric.id == metric_id, Metric.user_id == user.id).first()
     if not m:
         raise HTTPException(status_code=404, detail="Metric not found")
-    ts = _parse_recorded_at(body.recorded_at) if body.recorded_at else \
-         datetime.combine(datetime.utcnow().date(), time_type.min)
+    ts = (_parse_recorded_at(body.recorded_at) if body.recorded_at
+          else datetime.combine(datetime.utcnow().date(), time_type.min))
     e = Entry(metric_id=metric_id, value=body.value, note=body.note,
               series_label=body.series_label, recorded_at=ts)
     db.add(e)
     db.commit()
     db.refresh(e)
-    return {
-        "id": e.id, "metric_id": e.metric_id, "value": e.value,
-        "recorded_at": e.recorded_at.isoformat(),
-        "note": e.note, "series_label": e.series_label,
-    }
+    return {"id": e.id, "metric_id": e.metric_id, "value": e.value,
+            "recorded_at": e.recorded_at.isoformat(), "note": e.note,
+            "series_label": e.series_label}
 
 
 # ── CSV Export ─────────────────────────────────────────────────────────────────
@@ -344,7 +561,7 @@ async def api_add_entry(
 async def export_csv(request: Request, metric_id: int, db: Session = Depends(get_db)):
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
-    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    m = db.query(Metric).filter(Metric.id == metric_id, Metric.user_id == _uid(request)).first()
     if not m:
         raise HTTPException(status_code=404)
     entries = sorted(m.entries, key=lambda e: e.recorded_at)
@@ -367,45 +584,58 @@ async def export_csv(request: Request, metric_id: int, db: Session = Depends(get
     )
 
 
+# ── Public profile ─────────────────────────────────────────────────────────────
+@app.get("/u/{username}", response_class=HTMLResponse)
+async def public_profile(request: Request, username: str, db: Session = Depends(get_db)):
+    owner = db.query(User).filter(User.username == username).first()
+    if not owner:
+        raise HTTPException(status_code=404, detail="User not found")
+    public_metrics = (db.query(Metric)
+                      .filter(Metric.user_id == owner.id, Metric.is_public == 1)
+                      .order_by(Metric.created_at.desc()).all())
+    summaries = _compute_summaries(public_metrics)
+    return templates.TemplateResponse("public_profile.html", {
+        "request": request, "owner": owner, "summaries": summaries,
+    })
+
+
+# ── Public metric view (read-only) ─────────────────────────────────────────────
+@app.get("/u/{username}/{metric_id}", response_class=HTMLResponse)
+async def public_metric(request: Request, username: str, metric_id: int,
+                         db: Session = Depends(get_db)):
+    owner = db.query(User).filter(User.username == username).first()
+    if not owner:
+        raise HTTPException(status_code=404)
+    m = db.query(Metric).filter(
+        Metric.id == metric_id,
+        Metric.user_id == owner.id,
+        Metric.is_public == 1,
+    ).first()
+    if not m:
+        raise HTTPException(status_code=404)
+    entries     = sorted(m.entries, key=lambda e: e.recorded_at)
+    annotations = sorted(m.annotations, key=lambda a: a.annotated_at)
+    view_data   = _compute_metric_view_data(m, entries, annotations)
+    return templates.TemplateResponse("public_metric.html", {
+        "request": request, "metric": m, "owner": owner,
+        "entries": list(reversed(entries)),
+        "annotations": annotations,
+        **view_data,
+    })
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, db: Session = Depends(get_db)):
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
-    metrics = db.query(Metric).order_by(Metric.created_at.desc()).all()
-    summaries = []
-    for m in metrics:
-        entries = sorted(m.entries, key=lambda e: e.recorded_at)
-        latest  = entries[-1].value if entries else None
-        best    = min(e.value for e in entries) if entries and m.lower_better else (max(e.value for e in entries) if entries else None)
-        first   = entries[0].value if entries else None
-        pct     = ((latest - first) / first * 100) if (first is not None and first != 0 and latest is not None) else None
-
-        # Per-series breakdown for multi-graph mode
-        series_summary = []
-        if (getattr(m, 'graph_mode', 'single') or 'single') == 'multi' and entries:
-            groups: dict[str, list] = defaultdict(list)
-            for e in entries:
-                groups[e.series_label or 'default'].append(e)
-            for label, s_entries in groups.items():
-                s_ys     = [e.value for e in s_entries]
-                s_latest = s_ys[-1]
-                s_first  = s_ys[0]
-                s_pct    = ((s_latest - s_first) / s_first * 100) if s_first != 0 else 0
-                series_summary.append({
-                    "label":    label,
-                    "latest":   s_latest,
-                    "pct":      s_pct,
-                    "improved": (s_pct < 0) if m.lower_better else (s_pct > 0),
-                    "count":    len(s_entries),
-                })
-
-        summaries.append({
-            "metric": m, "count": len(entries),
-            "latest": latest, "best": best, "first": first, "pct": pct,
-            "series_summary": series_summary,
-        })
-    return templates.TemplateResponse("dashboard.html", {"request": request, "summaries": summaries})
+    metrics = (db.query(Metric)
+               .filter(Metric.user_id == _uid(request))
+               .order_by(Metric.created_at.desc()).all())
+    summaries = _compute_summaries(metrics)
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request, "summaries": summaries,
+    })
 
 
 # ── Create metric ─────────────────────────────────────────────────────────────
@@ -426,6 +656,7 @@ async def create_metric(
     graph_mode: str = Form("single"),
     series_names: str = Form(""),
     time_unit: str = Form("day"),
+    is_public: int = Form(0),
     db: Session = Depends(get_db)
 ):
     if not _uid(request):
@@ -452,175 +683,46 @@ async def create_metric(
         series_names = None
     m = Metric(name=name, description=description or None, unit=unit or None,
                lower_better=lower_better, graph_mode=graph_mode, series_names=series_names,
-               time_unit=time_unit)
+               time_unit=time_unit, is_public=is_public, user_id=_uid(request))
     db.add(m)
     db.commit()
     db.refresh(m)
     return RedirectResponse(f"/metrics/{m.id}", status_code=302)
 
 
-# ── Metric detail + chart ─────────────────────────────────────────────────────
+# ── Metric detail ─────────────────────────────────────────────────────────────
 @app.get("/metrics/{metric_id}", response_class=HTMLResponse)
 async def metric_detail(request: Request, metric_id: int, db: Session = Depends(get_db)):
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
-    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    m = db.query(Metric).filter(Metric.id == metric_id, Metric.user_id == _uid(request)).first()
     if not m:
         raise HTTPException(status_code=404, detail="Metric not found")
     entries     = sorted(m.entries, key=lambda e: e.recorded_at)
     annotations = sorted(m.annotations, key=lambda a: a.annotated_at)
-
-    chart_json         = None
-    series_charts_json = "[]"
-    stats              = {}
-    series_labels      = []
-    series_pct         = []
-
-    raw_names = getattr(m, 'series_names', None) or ""
-    defined_series = [s.strip() for s in raw_names.split(",") if s.strip()]
-    if not defined_series and (getattr(m, 'graph_mode', 'single') or 'single') == 'multi':
-        defined_series = sorted(set(e.series_label for e in entries if e.series_label))
-
-    if entries:
-        ys_all   = [e.value for e in entries]
-        best_val = min(ys_all) if m.lower_better else max(ys_all)
-        first, last = ys_all[0], ys_all[-1]
-        delta = last - first
-        pct   = (delta / first * 100) if first != 0 else 0
-        stats = {
-            "count":    len(entries),
-            "latest":   last,
-            "best":     best_val,
-            "first":    first,
-            "delta":    delta,
-            "pct":      pct,
-            "improved": (delta < 0 if m.lower_better else delta > 0),
-        }
-
-        graph_mode = getattr(m, 'graph_mode', 'single') or 'single'
-        tu = getattr(m, 'time_unit', 'day') or 'day'
-
-        if graph_mode == 'multi':
-            series_labels = sorted(set(e.series_label for e in entries if e.series_label))
-            groups: dict[str, list] = defaultdict(list)
-            for e in entries:
-                groups[e.series_label or 'default'].append(e)
-
-            for label, s_entries in groups.items():
-                s_ys = [e.value for e in s_entries]
-                s_first, s_last = s_ys[0], s_ys[-1]
-                s_delta = s_last - s_first
-                s_pct   = (s_delta / s_first * 100) if s_first != 0 else 0
-                series_pct.append({
-                    "label":    label,
-                    "delta":    s_delta,
-                    "pct":      s_pct,
-                    "improved": (s_delta < 0 if m.lower_better else s_delta > 0),
-                })
-
-            # Combined chart (all series overlaid)
-            fig_combined = go.Figure()
-            for i, (label, s_entries) in enumerate(groups.items()):
-                color = SERIES_COLORS[i % len(SERIES_COLORS)]
-                xs = [_format_date(e.recorded_at, tu) for e in s_entries]
-                ys = [e.value for e in s_entries]
-                fig_combined.add_trace(go.Scatter(
-                    x=xs, y=ys,
-                    mode="lines+markers",
-                    name=label,
-                    line=dict(color=color, width=2),
-                    marker=dict(size=7, color=color, line=dict(color="#0a0f1e", width=1.5)),
-                    hovertemplate="<b>%{y}</b><br>%{x}<extra></extra>",
-                ))
-            for ann in annotations:
-                fig_combined.add_vline(
-                    x=_format_date(ann.annotated_at, tu),
-                    line_dash="dash", line_color="#ffab40", line_width=1.5,
-                    annotation_text=ann.label,
-                    annotation_position="top left",
-                    annotation=dict(font_size=10, font_color="#ffab40"),
-                )
-            layout = _chart_layout(m.unit)
-            layout["legend"] = dict(
-                bgcolor="rgba(0,0,0,0)",
-                bordercolor="rgba(255,255,255,0.1)",
-                borderwidth=1,
-            )
-            fig_combined.update_layout(**layout)
-            chart_json = json.dumps(fig_combined, cls=plotly.utils.PlotlyJSONEncoder)
-
-            # Separate chart per series
-            sep_list = []
-            for i, (label, s_entries) in enumerate(groups.items()):
-                color = SERIES_COLORS[i % len(SERIES_COLORS)]
-                xs = [_format_date(e.recorded_at, tu) for e in s_entries]
-                ys = [e.value for e in s_entries]
-                fig_sep = go.Figure()
-                fig_sep.add_trace(go.Scatter(
-                    x=xs, y=ys,
-                    mode="lines+markers",
-                    name=label,
-                    line=dict(color=color, width=2),
-                    marker=dict(size=7, color=color, line=dict(color="#0a0f1e", width=1.5)),
-                    hovertemplate="<b>%{y}</b><br>%{x}<extra></extra>",
-                ))
-                s_best = min(ys) if m.lower_better else max(ys)
-                fig_sep.add_hline(y=s_best, line_dash="dot", line_color="#ff4081",
-                                  annotation_text=f"Best: {s_best}",
-                                  annotation_position="bottom right")
-                for ann in annotations:
-                    fig_sep.add_vline(
-                        x=_format_date(ann.annotated_at, tu),
-                        line_dash="dash", line_color="#ffab40", line_width=1.5,
-                        annotation_text=ann.label,
-                        annotation_position="top left",
-                        annotation=dict(font_size=10, font_color="#ffab40"),
-                    )
-                fig_sep.update_layout(**_chart_layout(m.unit))
-                sep_list.append({
-                    "label": label,
-                    "chartData": json.loads(json.dumps(fig_sep, cls=plotly.utils.PlotlyJSONEncoder)),
-                })
-            series_charts_json = json.dumps(sep_list)
-
-        else:
-            # Single mode
-            xs = [_format_date(e.recorded_at, tu) for e in entries]
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=xs, y=ys_all,
-                mode="lines+markers",
-                name=m.name,
-                line=dict(color="#00e5ff", width=2),
-                marker=dict(size=7, color="#00e5ff", line=dict(color="#0a0f1e", width=1.5)),
-                hovertemplate="<b>%{y}</b><br>%{x}<extra></extra>",
-            ))
-            fig.add_hline(y=best_val, line_dash="dot", line_color="#ff4081",
-                          annotation_text=f"Best: {best_val}", annotation_position="bottom right")
-            for ann in annotations:
-                fig.add_vline(
-                    x=_format_date(ann.annotated_at, tu),
-                    line_dash="dash", line_color="#ffab40", line_width=1.5,
-                    annotation_text=ann.label,
-                    annotation_position="top left",
-                    annotation=dict(font_size=10, font_color="#ffab40"),
-                )
-            fig.update_layout(**_chart_layout(m.unit))
-            chart_json = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
-
-    series_charts_list = [s["label"] for s in json.loads(series_charts_json)] if series_charts_json != "[]" else []
-
+    view_data   = _compute_metric_view_data(m, entries, annotations)
+    owner_username = request.session.get("username", "")
+    share_url = f"/u/{owner_username}/{m.id}" if m.is_public and owner_username else None
     return templates.TemplateResponse("metric.html", {
-        "request": request, "metric": m, "entries": list(reversed(entries)),
-        "chart_json": chart_json, "stats": stats,
-        "series_charts_json": series_charts_json,
-        "series_charts_list": series_charts_list,
-        "series_labels": series_labels,
-        "series_pct": series_pct,
-        "defined_series": defined_series,
-        "time_unit": getattr(m, 'time_unit', 'day') or 'day',
+        "request": request, "metric": m,
+        "entries": list(reversed(entries)),
         "annotations": annotations,
+        "share_url": share_url,
+        **view_data,
     })
+
+
+# ── Toggle metric visibility ───────────────────────────────────────────────────
+@app.post("/metrics/{metric_id}/toggle-visibility")
+async def toggle_visibility(request: Request, metric_id: int, db: Session = Depends(get_db)):
+    if not _uid(request):
+        return RedirectResponse("/login", status_code=302)
+    m = db.query(Metric).filter(Metric.id == metric_id, Metric.user_id == _uid(request)).first()
+    if not m:
+        raise HTTPException(status_code=404)
+    m.is_public = 0 if m.is_public else 1
+    db.commit()
+    return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
 
 
 # ── Manage predefined series (multi mode) ─────────────────────────────────────
@@ -629,13 +731,11 @@ def _parse_series(m: Metric) -> list[str]:
 
 
 @app.post("/metrics/{metric_id}/series/add")
-async def series_add(
-    request: Request, metric_id: int,
-    series_name: str = Form(...), db: Session = Depends(get_db)
-):
+async def series_add(request: Request, metric_id: int,
+                     series_name: str = Form(...), db: Session = Depends(get_db)):
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
-    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    m = db.query(Metric).filter(Metric.id == metric_id, Metric.user_id == _uid(request)).first()
     if not m:
         raise HTTPException(status_code=404)
     name = series_name.strip()
@@ -648,13 +748,11 @@ async def series_add(
 
 
 @app.post("/metrics/{metric_id}/series/remove")
-async def series_remove(
-    request: Request, metric_id: int,
-    series_name: str = Form(...), db: Session = Depends(get_db)
-):
+async def series_remove(request: Request, metric_id: int,
+                         series_name: str = Form(...), db: Session = Depends(get_db)):
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
-    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    m = db.query(Metric).filter(Metric.id == metric_id, Metric.user_id == _uid(request)).first()
     if not m:
         raise HTTPException(status_code=404)
     names = [s for s in _parse_series(m) if s != series_name.strip()]
@@ -665,20 +763,16 @@ async def series_remove(
 
 # ── Annotations ───────────────────────────────────────────────────────────────
 @app.post("/metrics/{metric_id}/annotations")
-async def add_annotation(
-    request: Request,
-    metric_id: int,
-    label: str = Form(...),
-    annotated_at: str = Form(...),
-    db: Session = Depends(get_db)
-):
+async def add_annotation(request: Request, metric_id: int,
+                          label: str = Form(...), annotated_at: str = Form(...),
+                          db: Session = Depends(get_db)):
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
-    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    m = db.query(Metric).filter(Metric.id == metric_id, Metric.user_id == _uid(request)).first()
     if not m:
         raise HTTPException(status_code=404)
-    ts = _parse_recorded_at(annotated_at)
-    ann = Annotation(metric_id=metric_id, label=label.strip(), annotated_at=ts)
+    ann = Annotation(metric_id=metric_id, label=label.strip(),
+                     annotated_at=_parse_recorded_at(annotated_at))
     db.add(ann)
     db.commit()
     return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
@@ -689,7 +783,7 @@ async def delete_annotation(request: Request, annotation_id: int, db: Session = 
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     ann = db.query(Annotation).filter(Annotation.id == annotation_id).first()
-    if not ann:
+    if not ann or ann.metric.user_id != _uid(request):
         raise HTTPException(status_code=404)
     metric_id = ann.metric_id
     db.delete(ann)
@@ -699,24 +793,19 @@ async def delete_annotation(request: Request, annotation_id: int, db: Session = 
 
 # ── Log entry ─────────────────────────────────────────────────────────────────
 @app.post("/metrics/{metric_id}/entries")
-async def add_entry(
-    request: Request,
-    metric_id: int,
-    value: float = Form(...),
-    note: str = Form(""),
-    recorded_at: str = Form(""),
-    series_label: str = Form(""),
-    db: Session = Depends(get_db)
-):
+async def add_entry(request: Request, metric_id: int,
+                    value: float = Form(...), note: str = Form(""),
+                    recorded_at: str = Form(""), series_label: str = Form(""),
+                    db: Session = Depends(get_db)):
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
-    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    m = db.query(Metric).filter(Metric.id == metric_id, Metric.user_id == _uid(request)).first()
     if not m:
         raise HTTPException(status_code=404)
-    ts = _parse_recorded_at(recorded_at) if recorded_at else \
-         datetime.combine(datetime.utcnow().date(), time_type.min)
-    e = Entry(metric_id=metric_id, value=value, note=note or None, recorded_at=ts,
-              series_label=series_label or None)
+    ts = (_parse_recorded_at(recorded_at) if recorded_at
+          else datetime.combine(datetime.utcnow().date(), time_type.min))
+    e = Entry(metric_id=metric_id, value=value, note=note or None,
+              recorded_at=ts, series_label=series_label or None)
     db.add(e)
     db.commit()
     return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
@@ -728,7 +817,7 @@ async def delete_entry(request: Request, entry_id: int, db: Session = Depends(ge
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
     e = db.query(Entry).filter(Entry.id == entry_id).first()
-    if not e:
+    if not e or e.metric.user_id != _uid(request):
         raise HTTPException(status_code=404)
     metric_id = e.metric_id
     db.delete(e)
@@ -741,7 +830,7 @@ async def delete_entry(request: Request, entry_id: int, db: Session = Depends(ge
 async def delete_metric(request: Request, metric_id: int, db: Session = Depends(get_db)):
     if not _uid(request):
         return RedirectResponse("/login", status_code=302)
-    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    m = db.query(Metric).filter(Metric.id == metric_id, Metric.user_id == _uid(request)).first()
     if not m:
         raise HTTPException(status_code=404)
     db.delete(m)

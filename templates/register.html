@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Login — own/graph</title>
+<title>Register — own/graph</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
 <style>
   :root {
@@ -20,15 +20,15 @@
     background-image:
       radial-gradient(ellipse 60% 50% at 50% 0%, rgba(0,229,255,0.07) 0%, transparent 60%);
   }
-  .login-box {
+  .box {
     width: 100%;
-    max-width: 380px;
+    max-width: 400px;
     padding: 2.5rem;
     background: var(--bg2);
     border: 1px solid var(--border);
     position: relative;
   }
-  .login-box::before {
+  .box::before {
     content: '';
     position: absolute; top: 0; left: 0; right: 0; height: 1px;
     background: linear-gradient(90deg, transparent, var(--accent), transparent);
@@ -69,7 +69,7 @@
     transition: border-color 0.2s, box-shadow 0.2s;
     margin-bottom: 1.2rem;
   }
-  input[type=text]:focus, input[type=password]:focus {
+  input:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 2px rgba(0,229,255,0.1);
   }
@@ -98,31 +98,35 @@
     font-size: 0.78rem;
     margin-bottom: 1rem;
   }
-  .corner {
-    position: absolute; bottom: 1rem; right: 1rem;
-    font-size: 0.6rem; color: var(--text-dim); letter-spacing: 0.05em;
+  .hint {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    margin-top: -0.9rem;
+    margin-bottom: 1.2rem;
   }
 </style>
 </head>
 <body>
-<div class="login-box">
+<div class="box">
   <div class="brand">own<span>/</span>graph</div>
-  <div class="sub">Personal metrics dashboard</div>
+  <div class="sub">Create your account</div>
   {% if error %}
   <div class="error">{{ error }}</div>
   {% endif %}
-  <form method="post" action="/login">
+  <form method="post" action="/register">
     <label for="username">Username</label>
-    <input type="text" id="username" name="username" placeholder="your username" autofocus autocomplete="username">
+    <input type="text" id="username" name="username" placeholder="e.g. alice" autofocus
+           autocomplete="username" required>
     <label for="password">Password</label>
-    <input type="password" id="password" name="password" placeholder="••••••••" autocomplete="current-password">
-    <button type="submit">→ Enter</button>
+    <input type="password" id="password" name="password" placeholder="min 8 characters"
+           autocomplete="new-password" required>
+    <div class="hint">Minimum 8 characters</div>
+    <button type="submit">→ Create Account</button>
   </form>
   <div style="margin-top:1.2rem;text-align:center;font-size:0.72rem;color:var(--text-dim);">
-    New here?
-    <a href="/register" style="color:var(--accent);text-decoration:none;margin-left:0.3rem;">Create an account →</a>
+    Already have an account?
+    <a href="/login" style="color:var(--accent);text-decoration:none;margin-left:0.3rem;">Sign in →</a>
   </div>
-  <div class="corner">v1.0</div>
 </div>
 </body>
 </html>

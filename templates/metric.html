@@ -56,9 +56,20 @@
       {% endif %}
     </div>
   </div>
-  <div style="display:flex;gap:0.7rem;align-items:center;">
+  <div style="display:flex;gap:0.7rem;align-items:center;flex-wrap:wrap;">
     <a href="/" class="btn">← Back</a>
     <a href="/metrics/{{ metric.id }}/export.csv" class="btn" title="Download all entries as CSV">↓ CSV</a>
+    <!-- Visibility toggle -->
+    <form method="post" action="/metrics/{{ metric.id }}/toggle-visibility" style="display:inline;">
+      <button type="submit" class="btn"
+              style="{% if metric.is_public %}border-color:rgba(0,230,118,0.45);color:var(--success);{% else %}color:var(--text-dim);{% endif %}">
+        {% if metric.is_public %}Public{% else %}Private{% endif %}
+      </button>
+    </form>
+    {% if share_url %}
+    <a href="{{ share_url }}" target="_blank" class="btn"
+       style="font-size:0.7rem;color:var(--text-dim);" title="Open public view">Share</a>
+    {% endif %}
     <form method="post" action="/metrics/{{ metric.id }}/delete"
           onsubmit="return confirm('Delete this metric and all its data?')">
       <button type="submit" class="btn btn-danger">Delete</button>

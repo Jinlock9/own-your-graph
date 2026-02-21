@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block title %}{{ metric.name }} — {{ owner.username }} — own/graph{% endblock %}
+{% block extra_head %}
+<style>
+  .view-toggle { display:flex; gap:0.5rem; margin-bottom:0.75rem; }
+  .view-btn { font-size:0.72rem; padding:0.35rem 0.9rem; letter-spacing:0.08em; }
+  .view-btn.active {
+    background: rgba(0,229,255,0.16);
+    border-color: var(--accent);
+    box-shadow: 0 0 12px rgba(0,229,255,0.18);
+  }
+  .sep-chart-label {
+    font-size:0.68rem; letter-spacing:0.12em; text-transform:uppercase;
+    color:var(--accent); margin-bottom:0.5rem; padding-bottom:0.4rem;
+    border-bottom:1px solid var(--border);
+  }
+</style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.min.css">
+{% endblock %}
+{% block content %}
+
+<!-- Header -->
+<div class="page-header">
+  <div>
+    <div class="page-title"><span>//</span> {{ metric.name }}</div>
+    <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.4rem;flex-wrap:wrap;">
+      {% if metric.unit %}<span class="tag tag-accent">{{ metric.unit }}</span>{% endif %}
+      {% if metric.lower_better %}
+        <span class="tag" style="color:var(--text-dim)">↓ lower is better</span>
+      {% else %}
+        <span class="tag" style="color:var(--text-dim)">↑ higher is better</span>
+      {% endif %}
+      {% if metric.graph_mode == 'multi' %}
+        <span class="tag" style="border-color:rgba(255,171,64,0.35);color:var(--warn);">multi graph</span>
+      {% endif %}
+      <span class="tag" style="color:var(--text-dim)">per {{ time_unit }}</span>
+      <a href="/u/{{ owner.username }}"
+         style="font-size:0.72rem;color:var(--accent);text-decoration:none;letter-spacing:0.04em;">
+        by {{ owner.username }}
+      </a>
+      {% if metric.description %}
+      <span style="font-size:0.75rem;color:var(--text-dim);">— {{ metric.description }}</span>
+      {% endif %}
+    </div>
+  </div>
+  <a href="/u/{{ owner.username }}" class="btn">← All metrics</a>
+</div>
+
+{% if stats %}
+<!-- Stats -->
+<div class="stat-grid">
+  <div class="stat-box">
+    <div class="stat-value">{{ stats.count }}</div>
+    <div class="stat-label">Data Points</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-value">{{ "%.4g"|format(stats.latest) }}</div>
+    <div class="stat-label">Latest</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-value" style="color:var(--success)">{{ "%.4g"|format(stats.best) }}</div>
+    <div class="stat-label">Best</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-value {% if stats.improved %}improved{% else %}worsened{% endif %}">
+      {% if stats.delta >= 0 %}+{% endif %}{{ "%.3g"|format(stats.delta) }}
+    </div>
+    <div class="stat-label">Total Change</div>
+  </div>
+  {% if metric.graph_mode == 'multi' and series_pct %}
+  <div class="stat-box" style="grid-column: span 2; text-align:left; padding: 0.85rem 1rem;">
+    <div class="stat-label" style="margin-bottom:0.5rem;">vs. First</div>
+    {% for s in series_pct %}
+    <div style="display:flex;justify-content:space-between;align-items:baseline;
+                padding:0.18rem 0;border-bottom:1px solid rgba(255,255,255,0.04);
+                {% if loop.last %}border-bottom:none;{% endif %}">
+      <span style="font-size:0.72rem;color:var(--text-dim);">{{ s.label }}</span>
+      <span style="font-size:0.9rem;font-weight:600;font-family:'Syne',sans-serif;
+                   color:{% if s.improved %}var(--success){% else %}var(--accent2){% endif %};">
+        {% if s.pct >= 0 %}+{% endif %}{{ "%.2f"|format(s.pct) }}%
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="stat-box">
+    <div class="stat-value {% if stats.improved %}improved{% else %}worsened{% endif %}">
+      {% if stats.pct >= 0 %}+{% endif %}{{ "%.2f"|format(stats.pct) }}%
+    </div>
+    <div class="stat-label">vs. First</div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Chart -->
+{% if metric.graph_mode == 'multi' %}
+  <div class="view-toggle">
+    <button class="btn view-btn active" id="btn-combined" onclick="switchView('combined')">Combined View</button>
+    <button class="btn view-btn" id="btn-separate" onclick="switchView('separate')">Separate View</button>
+  </div>
+  <div id="view-combined" class="card" style="margin-bottom:2rem;padding:1.2rem 1rem 0.5rem;">
+    <div id="chart-combined" style="width:100%;height:380px;"></div>
+  </div>
+  <div id="view-separate" style="display:none;margin-bottom:2rem;">
+    {% for s in series_charts_list %}
+    <div class="card" style="margin-bottom:1rem;padding:1.2rem 1rem 0.8rem;">
+      <div class="sep-chart-label">{{ s }}</div>
+      <div id="chart-sep-{{ loop.index0 }}" style="width:100%;height:300px;"></div>
+    </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="card" style="margin-bottom:2rem;padding:1.2rem 1rem 0.5rem;">
+    <div id="chart" style="width:100%;height:380px;"></div>
+  </div>
+{% endif %}
+
+{% else %}
+<div class="card" style="text-align:center;padding:2.5rem;margin-bottom:2rem;">
+  <div style="font-size:0.85rem;color:var(--text-dim);">No data yet.</div>
+</div>
+{% endif %}
+
+<!-- Entry history (read-only) -->
+<div class="card" style="padding:1rem 1.2rem;">
+  <div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;color:var(--accent);margin-bottom:1rem;">
+    History
+  </div>
+  {% if entries %}
+  <div style="overflow-x:auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          {% if metric.graph_mode == 'multi' %}<th>Series</th>{% endif %}
+          <th>Value</th>
+          <th>Date</th>
+          <th>Note</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in entries %}
+        <tr>
+          <td style="color:var(--text-dim);font-size:0.7rem;">{{ loop.index }}</td>
+          {% if metric.graph_mode == 'multi' %}
+          <td style="font-size:0.75rem;color:var(--warn);white-space:nowrap;">{{ e.series_label or '—' }}</td>
+          {% endif %}
+          <td style="font-weight:500;color:#fff;">{{ e.value }}</td>
+          <td style="color:var(--text-dim);font-size:0.78rem;">
+            {% if time_unit == 'week' %}{{ e.recorded_at.strftime('%G-W%V') }}
+            {% elif time_unit == 'month' %}{{ e.recorded_at.strftime('%Y-%m') }}
+            {% else %}{{ e.recorded_at.strftime('%Y-%m-%d') }}{% endif %}
+          </td>
+          <td style="color:var(--text-dim);font-size:0.78rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            {{ e.note or '—' }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div style="text-align:center;padding:1.5rem;font-size:0.8rem;color:var(--text-dim);">No entries yet.</div>
+  {% endif %}
+</div>
+
+<div style="margin-top:1.5rem;text-align:center;font-size:0.72rem;color:var(--text-dim);">
+  <a href="/register" style="color:var(--accent);text-decoration:none;">Track your own metrics →</a>
+</div>
+
+{% if chart_json %}
+{% if metric.graph_mode == 'multi' %}
+<script>
+  const combinedData = {{ chart_json | safe }};
+  Plotly.newPlot('chart-combined', combinedData.data, combinedData.layout, {
+    responsive: true, displayModeBar: true,
+    modeBarButtonsToRemove: ['toImage', 'sendDataToCloud'], displaylogo: false,
+  });
+  const seriesData = {{ series_charts_json | safe }};
+  let separateInitialized = false;
+  function switchView(view) {
+    const combined = document.getElementById('view-combined');
+    const separate = document.getElementById('view-separate');
+    const btnC = document.getElementById('btn-combined');
+    const btnS = document.getElementById('btn-separate');
+    if (view === 'separate' && !separateInitialized) {
+      seriesData.forEach(function(s, i) {
+        Plotly.newPlot('chart-sep-' + i, s.chartData.data, s.chartData.layout, {
+          responsive: true, displayModeBar: true,
+          modeBarButtonsToRemove: ['toImage', 'sendDataToCloud'], displaylogo: false,
+        });
+      });
+      separateInitialized = true;
+    }
+    combined.style.display = view === 'combined' ? 'block' : 'none';
+    separate.style.display = view === 'separate' ? 'block' : 'none';
+    btnC.classList.toggle('active', view === 'combined');
+    btnS.classList.toggle('active', view === 'separate');
+  }
+</script>
+{% else %}
+<script>
+  const data = {{ chart_json | safe }};
+  Plotly.newPlot('chart', data.data, data.layout, {
+    responsive: true, displayModeBar: true,
+    modeBarButtonsToRemove: ['toImage', 'sendDataToCloud'], displaylogo: false,
+  });
+</script>
+{% endif %}
+{% endif %}
+{% endblock %}

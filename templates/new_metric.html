@@ -145,6 +145,25 @@
         <input type="hidden" name="series_names" id="series-names-hidden" value="">
       </div>
 
+      <!-- Visibility -->
+      <div class="form-group">
+        <label>Visibility</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+          <label class="mode-card selected" id="card-private">
+            <input type="radio" name="is_public" value="0" checked
+                   style="display:none;" onchange="selectVisibility('private')">
+            <div class="mode-card-title">Private</div>
+            <div class="mode-card-desc">Only you can see this metric.</div>
+          </label>
+          <label class="mode-card" id="card-public">
+            <input type="radio" name="is_public" value="1"
+                   style="display:none;" onchange="selectVisibility('public')">
+            <div class="mode-card-title">Public</div>
+            <div class="mode-card-desc">Anyone with your username or the link can view it.</div>
+          </label>
+        </div>
+      </div>
+
       <button type="submit" class="btn" style="width:100%;justify-content:center;padding:0.75rem;">
         Create Metric →
       </button>
@@ -210,8 +229,20 @@
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
+  function selectVisibility(vis) {
+    document.getElementById('card-private').classList.toggle('selected', vis === 'private');
+    document.getElementById('card-public').classList.toggle('selected', vis === 'public');
+  }
+
+  ['card-private', 'card-public'].forEach(id => {
+    document.getElementById(id).addEventListener('click', function() {
+      const radio = this.querySelector('input[type="radio"]');
+      radio.checked = true;
+      selectVisibility(radio.value === '0' ? 'private' : 'public');
+    });
+  });
+
   function prepareSubmit() {
-    // Ensure hidden field is up to date (already synced, but just in case)
     document.getElementById('series-names-hidden').value = seriesList.join(',');
     return true;
   }
