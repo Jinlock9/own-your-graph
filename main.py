@@ -28,14 +28,15 @@ Base         = declarative_base()
 
 class Metric(Base):
     __tablename__ = "metrics"
-    id          = Column(Integer, primary_key=True, index=True)
-    name        = Column(String, unique=True, nullable=False)
-    description = Column(Text, nullable=True)
-    unit        = Column(String, nullable=True)        # e.g. "cycles", "kg"
-    lower_better= Column(Integer, default=1)           # 1 = lower is better (perf), 0 = higher is better
-    graph_mode  = Column(String, default='single')     # 'single' or 'multi'
-    created_at  = Column(DateTime, default=datetime.utcnow)
-    entries     = relationship("Entry", back_populates="metric", cascade="all, delete-orphan")
+    id           = Column(Integer, primary_key=True, index=True)
+    name         = Column(String, unique=True, nullable=False)
+    description  = Column(Text, nullable=True)
+    unit         = Column(String, nullable=True)        # e.g. "cycles", "kg"
+    lower_better = Column(Integer, default=1)           # 1 = lower is better (perf), 0 = higher is better
+    graph_mode   = Column(String, default='single')     # 'single' or 'multi'
+    series_names = Column(Text, nullable=True)          # comma-separated predefined series (multi mode)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+    entries      = relationship("Entry", back_populates="metric", cascade="all, delete-orphan")
 
 class Entry(Base):
     __tablename__ = "entries"
@@ -54,6 +55,7 @@ with engine.connect() as _conn:
     for _stmt in [
         "ALTER TABLE metrics ADD COLUMN graph_mode VARCHAR DEFAULT 'single'",
         "ALTER TABLE entries ADD COLUMN series_label VARCHAR",
+        "ALTER TABLE metrics ADD COLUMN series_names TEXT",
     ]:
         try:
             _conn.execute(text(_stmt))
@@ -165,6 +167,7 @@ async def create_metric(
     unit: str = Form(""),
     lower_better: int = Form(1),
     graph_mode: str = Form("single"),
+    series_names: str = Form(""),
     db: Session = Depends(get_db)
 ):
     if not request.session.get("authenticated"):
@@ -174,8 +177,19 @@ async def create_metric(
         return templates.TemplateResponse("new_metric.html", {"request": request, "error": f'Metric "{name}" already exists.'})
     if graph_mode not in ("single", "multi"):
         graph_mode = "single"
+    # Normalise: strip whitespace, drop blanks, deduplicate while preserving order
+    if graph_mode == "multi" and series_names:
+        seen, cleaned = set(), []
+        for s in series_names.split(","):
+            s = s.strip()
+            if s and s not in seen:
+                seen.add(s)
+                cleaned.append(s)
+        series_names = ",".join(cleaned) or None
+    else:
+        series_names = None
     m = Metric(name=name, description=description or None, unit=unit or None,
-               lower_better=lower_better, graph_mode=graph_mode)
+               lower_better=lower_better, graph_mode=graph_mode, series_names=series_names)
     db.add(m)
     db.commit()
     db.refresh(m)
@@ -191,11 +205,17 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
         raise HTTPException(status_code=404, detail="Metric not found")
     entries = sorted(m.entries, key=lambda e: e.recorded_at)
 
-    chart_json        = None
+    chart_json         = None
     series_charts_json = "[]"
-    stats             = {}
-    series_labels     = []
-    series_pct        = []   # per-series vs-first breakdown for multi mode
+    stats              = {}
+    series_labels      = []
+    series_pct         = []   # per-series vs-first breakdown for multi mode
+
+    # Predefined series for the log dropdown; fall back to names found in entries
+    raw_names = getattr(m, 'series_names', None) or ""
+    defined_series = [s.strip() for s in raw_names.split(",") if s.strip()]
+    if not defined_series and (getattr(m, 'graph_mode', 'single') or 'single') == 'multi':
+        defined_series = sorted(set(e.series_label for e in entries if e.series_label))
 
     if entries:
         ys_all   = [e.value for e in entries]
@@ -315,6 +335,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
         "series_charts_list": series_charts_list,
         "series_labels": series_labels,
         "series_pct": series_pct,
+        "defined_series": defined_series,
     })
 
 # ── Log entry ─────────────────────────────────────────────────────────────────

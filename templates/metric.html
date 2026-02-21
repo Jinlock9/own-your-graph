@@ -152,10 +152,18 @@
     <form method="post" action="/metrics/{{ metric.id }}/entries">
       {% if metric.graph_mode == 'multi' %}
       <div class="form-group">
-        <label for="series_label">Series / Benchmark *</label>
+        <label for="series_label">Series *</label>
+        {% if defined_series %}
+        <select id="series_label" name="series_label" required>
+          <option value="" disabled selected>Select series…</option>
+          {% for s in defined_series %}
+          <option value="{{ s }}">{{ s }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        {# Fallback for metrics created before predefined series were supported #}
         <input type="text" id="series_label" name="series_label"
-               list="series-datalist"
-               placeholder="e.g. benchmark_A" required>
+               list="series-datalist" placeholder="e.g. benchmark_A" required>
         {% if series_labels %}
         <datalist id="series-datalist">
           {% for lbl in series_labels %}
@@ -163,7 +171,7 @@
           {% endfor %}
         </datalist>
         {% endif %}
-        <div style="font-size:0.65rem;color:var(--text-dim);margin-top:0.3rem;">Name this data series</div>
+        {% endif %}
       </div>
       {% endif %}
       <div class="form-group">
