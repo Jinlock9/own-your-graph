@@ -338,6 +338,43 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
         "defined_series": defined_series,
     })
 
+# ── Manage predefined series (multi mode) ─────────────────────────────────────
+def _parse_series(m: Metric) -> list[str]:
+    return [s.strip() for s in (m.series_names or "").split(",") if s.strip()]
+
+@app.post("/metrics/{metric_id}/series/add")
+async def series_add(
+    request: Request, metric_id: int,
+    series_name: str = Form(...), db: Session = Depends(get_db)
+):
+    if not request.session.get("authenticated"):
+        return RedirectResponse("/login", status_code=302)
+    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    if not m:
+        raise HTTPException(status_code=404)
+    name = series_name.strip()
+    names = _parse_series(m)
+    if name and name not in names:
+        names.append(name)
+        m.series_names = ",".join(names)
+        db.commit()
+    return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
+
+@app.post("/metrics/{metric_id}/series/remove")
+async def series_remove(
+    request: Request, metric_id: int,
+    series_name: str = Form(...), db: Session = Depends(get_db)
+):
+    if not request.session.get("authenticated"):
+        return RedirectResponse("/login", status_code=302)
+    m = db.query(Metric).filter(Metric.id == metric_id).first()
+    if not m:
+        raise HTTPException(status_code=404)
+    names = [s for s in _parse_series(m) if s != series_name.strip()]
+    m.series_names = ",".join(names) or None
+    db.commit()
+    return RedirectResponse(f"/metrics/{metric_id}", status_code=302)
+
 # ── Log entry ─────────────────────────────────────────────────────────────────
 @app.post("/metrics/{metric_id}/entries")
 async def add_entry(

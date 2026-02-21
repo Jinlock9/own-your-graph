@@ -194,6 +194,48 @@
         Log →
       </button>
     </form>
+
+    {% if metric.graph_mode == 'multi' %}
+    <!-- Series manager -->
+    <div style="border-top:1px solid var(--border);margin-top:1.2rem;padding-top:1rem;">
+      <div style="font-size:0.65rem;letter-spacing:0.1em;text-transform:uppercase;
+                  color:var(--text-dim);margin-bottom:0.55rem;">Series</div>
+
+      <!-- Existing tags with remove button -->
+      <div style="display:flex;flex-wrap:wrap;gap:0.35rem;margin-bottom:0.55rem;">
+        {% for s in defined_series %}
+        <form method="post" action="/metrics/{{ metric.id }}/series/remove" style="display:contents;">
+          <input type="hidden" name="series_name" value="{{ s }}">
+          <button type="submit"
+                  style="display:inline-flex;align-items:center;gap:0.3rem;
+                         padding:0.22rem 0.55rem;cursor:pointer;
+                         border:1px solid rgba(255,171,64,0.35);
+                         background:rgba(255,171,64,0.07);
+                         color:var(--warn);font-size:0.72rem;
+                         letter-spacing:0.04em;transition:background 0.15s;"
+                  onmouseover="this.style.background='rgba(255,171,64,0.15)'"
+                  onmouseout="this.style.background='rgba(255,171,64,0.07)'"
+                  title="Remove {{ s }}">
+            {{ s }} <span style="color:var(--text-dim);font-size:0.85rem;">×</span>
+          </button>
+        </form>
+        {% else %}
+        <span style="font-size:0.72rem;color:var(--text-dim);">No series yet.</span>
+        {% endfor %}
+      </div>
+
+      <!-- Add new series -->
+      <form method="post" action="/metrics/{{ metric.id }}/series/add"
+            style="display:flex;gap:0.4rem;">
+        <input type="text" name="series_name" placeholder="New series name…"
+               style="flex:1;font-size:0.78rem;padding:0.38rem 0.6rem;">
+        <button type="submit" class="btn"
+                style="font-size:0.72rem;padding:0.38rem 0.7rem;white-space:nowrap;">
+          + Add
+        </button>
+      </form>
+    </div>
+    {% endif %}
   </div>
 
   <!-- Entry table -->
