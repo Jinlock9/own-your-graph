@@ -77,12 +77,29 @@
     </div>
     <div class="stat-label">Total Change</div>
   </div>
+  {% if metric.graph_mode == 'multi' and series_pct %}
+  <div class="stat-box" style="grid-column: span 2; text-align:left; padding: 0.85rem 1rem;">
+    <div class="stat-label" style="margin-bottom:0.5rem;">vs. First</div>
+    {% for s in series_pct %}
+    <div style="display:flex;justify-content:space-between;align-items:baseline;
+                padding:0.18rem 0;border-bottom:1px solid rgba(255,255,255,0.04);
+                {% if loop.last %}border-bottom:none;{% endif %}">
+      <span style="font-size:0.72rem;color:var(--text-dim);letter-spacing:0.04em;">{{ s.label }}</span>
+      <span style="font-size:0.9rem;font-weight:600;font-family:'Syne',sans-serif;
+                   color:{% if s.improved %}var(--success){% else %}var(--accent2){% endif %};">
+        {% if s.pct >= 0 %}+{% endif %}{{ "%.2f"|format(s.pct) }}%
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
   <div class="stat-box">
     <div class="stat-value {% if stats.improved %}improved{% else %}worsened{% endif %}">
       {% if stats.pct >= 0 %}+{% endif %}{{ "%.2f"|format(stats.pct) }}%
     </div>
     <div class="stat-label">vs. First</div>
   </div>
+  {% endif %}
 </div>
 
 <!-- Chart section -->

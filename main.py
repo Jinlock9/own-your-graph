@@ -171,6 +171,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
     series_charts_json = "[]"
     stats             = {}
     series_labels     = []
+    series_pct        = []   # per-series vs-first breakdown for multi mode
 
     if entries:
         ys_all   = [e.value for e in entries]
@@ -200,6 +201,19 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
             groups: dict[str, list] = defaultdict(list)
             for e in entries:
                 groups[e.series_label or 'default'].append(e)
+
+            # ── Per-series vs-first breakdown ─────────────────────────────────
+            for label, s_entries in groups.items():
+                s_ys = [e.value for e in s_entries]
+                s_first, s_last = s_ys[0], s_ys[-1]
+                s_delta = s_last - s_first
+                s_pct   = (s_delta / s_first * 100) if s_first != 0 else 0
+                series_pct.append({
+                    "label":    label,
+                    "delta":    s_delta,
+                    "pct":      s_pct,
+                    "improved": (s_delta < 0 if m.lower_better else s_delta > 0),
+                })
 
             # ── Combined chart (all series overlaid) ──────────────────────────
             fig_combined = go.Figure()
@@ -276,6 +290,7 @@ async def metric_detail(request: Request, metric_id: int, db: Session = Depends(
         "series_charts_json": series_charts_json,
         "series_charts_list": series_charts_list,
         "series_labels": series_labels,
+        "series_pct": series_pct,
     })
 
 # ── Log entry ─────────────────────────────────────────────────────────────────
