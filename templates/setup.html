@@ -57,7 +57,7 @@
     color: var(--text-dim);
     margin-bottom: 0.4rem;
   }
-  input[type=text], input[type=password] {
+  input[type=text], input[type=password], input[type=email] {
     background: var(--bg);
     border: 1px solid var(--border);
     color: var(--text);
@@ -118,6 +118,9 @@
     <label for="username">Username</label>
     <input type="text" id="username" name="username" placeholder="e.g. alice" autofocus
            autocomplete="username" required>
+    <label for="email">Email <span style="color:var(--text-dim);font-size:0.65rem;">(optional, for password reset)</span></label>
+    <input type="email" id="email" name="email" placeholder="you@example.com"
+           autocomplete="email">
     <label for="password">Password</label>
     <input type="password" id="password" name="password" placeholder="min 8 characters"
            autocomplete="new-password" required>

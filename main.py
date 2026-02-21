@@ -4,8 +4,12 @@ import csv
 import io
 import hashlib
 import secrets
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from collections import defaultdict
-from datetime import datetime, date as date_type, time as time_type
+from datetime import datetime, timedelta, date as date_type, time as time_type
 from typing import Optional
 
 from fastapi import FastAPI, Request, Form, Depends, HTTPException, Header
@@ -23,6 +27,11 @@ from pydantic import BaseModel
 # ── Config ────────────────────────────────────────────────────────────────────
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./tracker.db")
 SECRET_KEY   = os.getenv("SECRET_KEY", "super-secret-key-change-in-prod")
+SMTP_HOST    = os.getenv("SMTP_HOST", "")
+SMTP_PORT    = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER    = os.getenv("SMTP_USER", "")
+SMTP_PASS    = os.getenv("SMTP_PASS", "")
+APP_URL      = os.getenv("APP_URL", "http://localhost:8000")
 
 # ── DB setup ──────────────────────────────────────────────────────────────────
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
@@ -33,12 +42,15 @@ Base         = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
-    id            = Column(Integer, primary_key=True, index=True)
-    username      = Column(String, unique=True, nullable=False)
-    password_hash = Column(String, nullable=False)
-    api_key       = Column(String, unique=True, nullable=True)
-    created_at    = Column(DateTime, default=datetime.utcnow)
-    metrics       = relationship("Metric", back_populates="owner", cascade="all, delete-orphan")
+    id                   = Column(Integer, primary_key=True, index=True)
+    username             = Column(String, unique=True, nullable=False)
+    password_hash        = Column(String, nullable=False)
+    email                = Column(String, nullable=True)
+    api_key              = Column(String, unique=True, nullable=True)
+    reset_token          = Column(String, nullable=True)   # SHA-256 hex of the raw token
+    reset_token_expires  = Column(DateTime, nullable=True)
+    created_at           = Column(DateTime, default=datetime.utcnow)
+    metrics              = relationship("Metric", back_populates="owner", cascade="all, delete-orphan")
 
 
 class Metric(Base):
@@ -90,6 +102,9 @@ with engine.connect() as _conn:
         "ALTER TABLE metrics ADD COLUMN time_unit VARCHAR DEFAULT 'day'",
         "ALTER TABLE metrics ADD COLUMN user_id INTEGER REFERENCES users(id)",
         "ALTER TABLE metrics ADD COLUMN is_public INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN email VARCHAR",
+        "ALTER TABLE users ADD COLUMN reset_token VARCHAR",
+        "ALTER TABLE users ADD COLUMN reset_token_expires DATETIME",
     ]:
         try:
             _conn.execute(text(_stmt))
@@ -170,6 +185,45 @@ def _verify_password(password: str, hashed: str) -> bool:
         return False
     key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 260_000)
     return secrets.compare_digest(key.hex(), key_hex)
+
+
+# ── Email helper ───────────────────────────────────────────────────────────────
+def _send_reset_email(to_email: str, username: str, token: str) -> bool:
+    """Send a password-reset email. Returns True on success, False if SMTP is not configured."""
+    if not SMTP_HOST or not SMTP_USER:
+        return False
+    reset_url = f"{APP_URL.rstrip('/')}/reset-password/{token}"
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "own/graph — password reset"
+    msg["From"]    = SMTP_USER
+    msg["To"]      = to_email
+    plain = (
+        f"Hi {username},\n\n"
+        f"Someone requested a password reset for your own/graph account.\n\n"
+        f"Reset link (valid for 1 hour):\n{reset_url}\n\n"
+        f"If you did not request this, you can safely ignore this email.\n"
+    )
+    html = f"""<html><body style="font-family:monospace;background:#070b14;color:#c8d0e0;padding:2rem;">
+<h2 style="color:#00e5ff;">own/graph password reset</h2>
+<p>Hi <strong>{username}</strong>,</p>
+<p>Someone requested a password reset for your account.</p>
+<p><a href="{reset_url}" style="display:inline-block;padding:0.6rem 1.2rem;
+   background:rgba(0,229,255,0.12);border:1px solid #00e5ff;color:#00e5ff;
+   text-decoration:none;">Reset my password →</a></p>
+<p style="font-size:0.8rem;color:#4a5568;">Link expires in 1 hour. If you did not request this, ignore this email.</p>
+</body></html>"""
+    msg.attach(MIMEText(plain, "plain"))
+    msg.attach(MIMEText(html, "html"))
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, to_email, msg.as_string())
+        return True
+    except Exception:
+        return False
 
 
 # ── Series colour palette ──────────────────────────────────────────────────────
@@ -435,6 +489,7 @@ async def setup(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
+    email: str = Form(""),
     db: Session = Depends(get_db)
 ):
     if db.query(User).count() > 0:
@@ -445,7 +500,7 @@ async def setup(
             "error": "Username is required and password must be at least 8 characters.",
         })
     user = User(username=username.strip(), password_hash=_hash_password(password),
-                api_key=secrets.token_urlsafe(32))
+                email=email.strip() or None, api_key=secrets.token_urlsafe(32))
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -467,6 +522,7 @@ async def register(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
+    email: str = Form(""),
     db: Session = Depends(get_db)
 ):
     if db.query(User).count() == 0:
@@ -483,7 +539,7 @@ async def register(
             "error": "That username is already taken.",
         })
     user = User(username=username, password_hash=_hash_password(password),
-                api_key=secrets.token_urlsafe(32))
+                email=email.strip() or None, api_key=secrets.token_urlsafe(32))
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -594,6 +650,91 @@ async def delete_account(
     db.commit()
     request.session.clear()
     return RedirectResponse("/register", status_code=302)
+
+
+@app.post("/settings/update-email")
+async def update_email(
+    request: Request,
+    email: str = Form(""),
+    db: Session = Depends(get_db)
+):
+    if not _uid(request):
+        return RedirectResponse("/login", status_code=302)
+    user = db.query(User).filter(User.id == _uid(request)).first()
+    user.email = email.strip() or None
+    db.commit()
+    return templates.TemplateResponse("settings.html", {
+        "request": request, "user": user,
+        "success": "Email address updated.", "error": None,
+    })
+
+
+# ── Forgot / reset password ────────────────────────────────────────────────────
+@app.get("/forgot-password", response_class=HTMLResponse)
+async def forgot_password_page(request: Request):
+    return templates.TemplateResponse("forgot_password.html", {
+        "request": request, "sent": False, "error": None,
+    })
+
+
+@app.post("/forgot-password", response_class=HTMLResponse)
+async def forgot_password(
+    request: Request,
+    username: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.username == username.strip()).first()
+    # Always show "sent" to avoid leaking whether the username exists
+    if user and user.email:
+        raw_token   = secrets.token_urlsafe(32)
+        token_hash  = hashlib.sha256(raw_token.encode()).hexdigest()
+        user.reset_token         = token_hash
+        user.reset_token_expires = datetime.utcnow() + timedelta(hours=1)
+        db.commit()
+        _send_reset_email(user.email, user.username, raw_token)
+    smtp_configured = bool(SMTP_HOST and SMTP_USER)
+    return templates.TemplateResponse("forgot_password.html", {
+        "request": request, "sent": True, "error": None,
+        "smtp_configured": smtp_configured,
+    })
+
+
+@app.get("/reset-password/{token}", response_class=HTMLResponse)
+async def reset_password_page(request: Request, token: str, db: Session = Depends(get_db)):
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    user = db.query(User).filter(User.reset_token == token_hash).first()
+    if not user or not user.reset_token_expires or user.reset_token_expires < datetime.utcnow():
+        return templates.TemplateResponse("reset_password.html", {
+            "request": request, "token": token, "expired": True, "error": None,
+        })
+    return templates.TemplateResponse("reset_password.html", {
+        "request": request, "token": token, "expired": False, "error": None,
+    })
+
+
+@app.post("/reset-password/{token}", response_class=HTMLResponse)
+async def reset_password(
+    request: Request,
+    token: str,
+    new_password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    user = db.query(User).filter(User.reset_token == token_hash).first()
+    if not user or not user.reset_token_expires or user.reset_token_expires < datetime.utcnow():
+        return templates.TemplateResponse("reset_password.html", {
+            "request": request, "token": token, "expired": True, "error": None,
+        })
+    if len(new_password) < 8:
+        return templates.TemplateResponse("reset_password.html", {
+            "request": request, "token": token, "expired": False,
+            "error": "Password must be at least 8 characters.",
+        })
+    user.password_hash       = _hash_password(new_password)
+    user.reset_token         = None
+    user.reset_token_expires = None
+    db.commit()
+    return RedirectResponse("/login?reset=1", status_code=302)
 
 
 # ── REST API ──────────────────────────────────────────────────────────────────
