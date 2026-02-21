@@ -27,13 +27,14 @@
     border-bottom: 1px solid var(--border);
   }
 </style>
-{% if time_unit != 'month' %}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.min.css">
+{% if time_unit == 'month' %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/plugins/monthSelect/style.css">
+{% endif %}
 <style>
   .flatpickr-input { cursor: pointer; }
   .flatpickr-calendar { font-family: inherit; }
 </style>
-{% endif %}
 {% endblock %}
 {% block content %}
 <div class="page-header">
@@ -189,43 +190,26 @@
       <div class="form-group">
         {% if time_unit == 'month' %}
         <label>Month</label>
-        <div style="display:flex;gap:0.5rem;">
-          <select id="ra_month" onchange="syncMonthField()" style="flex:1;">
-            <option value="01">January</option>
-            <option value="02">February</option>
-            <option value="03">March</option>
-            <option value="04">April</option>
-            <option value="05">May</option>
-            <option value="06">June</option>
-            <option value="07">July</option>
-            <option value="08">August</option>
-            <option value="09">September</option>
-            <option value="10">October</option>
-            <option value="11">November</option>
-            <option value="12">December</option>
-          </select>
-          <select id="ra_year" onchange="syncMonthField()" style="flex:0 0 auto;width:88px;"></select>
-        </div>
+        <input type="text" id="ra_month_display" placeholder="Pick a month" readonly>
         <input type="hidden" id="recorded_at" name="recorded_at">
+        <script src="https://cdn.jsdelivr.net/npm/flatpickr" defer></script>
+        <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/plugins/monthSelect/index.js" defer></script>
         <script>
-          (function() {
-            const now = new Date();
-            const curYear = now.getFullYear();
-            const yearSel = document.getElementById('ra_year');
-            for (let y = curYear - 3; y <= curYear + 1; y++) {
-              const opt = document.createElement('option');
-              opt.value = y; opt.textContent = y;
-              if (y === curYear) opt.selected = true;
-              yearSel.appendChild(opt);
+          document.addEventListener('DOMContentLoaded', function() {
+            function applyMonth(date) {
+              const yyyy = date.getFullYear();
+              const mm = String(date.getMonth() + 1).padStart(2, '0');
+              document.getElementById('recorded_at').value = `${yyyy}-${mm}`;
+              document.getElementById('ra_month_display').value =
+                date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
             }
-            document.getElementById('ra_month').value =
-              String(now.getMonth() + 1).padStart(2, '0');
-            syncMonthField();
-          })();
-          function syncMonthField() {
-            document.getElementById('recorded_at').value =
-              `${document.getElementById('ra_year').value}-${document.getElementById('ra_month').value}`;
-          }
+            applyMonth(new Date());
+            flatpickr('#ra_month_display', {
+              plugins: [new monthSelectPlugin({ shorthand: false, dateFormat: 'Y-m', altFormat: 'F Y' })],
+              defaultDate: new Date(),
+              onChange: function(dates) { if (dates.length) applyMonth(dates[0]); }
+            });
+          });
         </script>
         {% elif time_unit == 'week' %}
         <label>Week</label>
