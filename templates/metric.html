@@ -27,6 +27,13 @@
     border-bottom: 1px solid var(--border);
   }
 </style>
+{% if time_unit not in ('week', 'month') %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.min.css">
+<style>
+  .flatpickr-input { cursor: pointer; }
+  .flatpickr-calendar { font-family: inherit; }
+</style>
+{% endif %}
 {% endblock %}
 {% block content %}
 <div class="page-header">
@@ -237,13 +244,17 @@
         </script>
         {% else %}
         <label for="recorded_at">Date</label>
-        <input type="date" id="recorded_at" name="recorded_at">
+        <input type="text" id="recorded_at" name="recorded_at" placeholder="Pick a date" readonly>
+        <script src="https://cdn.jsdelivr.net/npm/flatpickr" defer></script>
         <script>
-          (function() {
+          document.addEventListener('DOMContentLoaded', function() {
             const t = new Date();
-            document.getElementById('recorded_at').value =
-              `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
-          })();
+            flatpickr('#recorded_at', {
+              defaultDate: t,
+              dateFormat: 'Y-m-d',
+              disableMobile: false,
+            });
+          });
         </script>
         {% endif %}
         <div style="font-size:0.65rem;color:var(--text-dim);margin-top:0.3rem;">
