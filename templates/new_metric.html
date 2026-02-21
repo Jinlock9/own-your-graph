@@ -1,5 +1,39 @@
 {% extends "base.html" %}
 {% block title %}New Metric — own/graph{% endblock %}
+{% block extra_head %}
+<style>
+  .mode-card {
+    display: block;
+    padding: 1rem 1.1rem;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+    background: var(--bg);
+    user-select: none;
+  }
+  .mode-card:hover {
+    border-color: rgba(0,229,255,0.4);
+    background: rgba(0,229,255,0.03);
+  }
+  .mode-card.selected {
+    border-color: var(--accent);
+    background: rgba(0,229,255,0.07);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .mode-card-title {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 0.3rem;
+  }
+  .mode-card.selected .mode-card-title { color: var(--accent); }
+  .mode-card-desc {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
+</style>
+{% endblock %}
 {% block content %}
 <div class="page-header">
   <div class="page-title"><span>//</span> New Metric</div>
@@ -29,10 +63,44 @@
           <option value="0">Higher is better</option>
         </select>
       </div>
+
+      <!-- Graph Mode -->
+      <div class="form-group">
+        <label>Graph Mode</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;">
+          <label class="mode-card selected" id="card-single">
+            <input type="radio" name="graph_mode" value="single" checked
+                   style="display:none;" onchange="selectMode('single')">
+            <div class="mode-card-title">Single Graph</div>
+            <div class="mode-card-desc">One unified timeline — all entries on a single chart.</div>
+          </label>
+          <label class="mode-card" id="card-multi">
+            <input type="radio" name="graph_mode" value="multi"
+                   style="display:none;" onchange="selectMode('multi')">
+            <div class="mode-card-title">Multi Graph</div>
+            <div class="mode-card-desc">Multiple named series — view them combined or in separate windows.</div>
+          </label>
+        </div>
+      </div>
+
       <button type="submit" class="btn" style="width:100%;justify-content:center;padding:0.75rem;">
         Create Metric →
       </button>
     </form>
   </div>
 </div>
+
+<script>
+  function selectMode(mode) {
+    document.getElementById('card-single').classList.toggle('selected', mode === 'single');
+    document.getElementById('card-multi').classList.toggle('selected', mode === 'multi');
+  }
+  // Allow clicking anywhere on the card to select it
+  ['card-single', 'card-multi'].forEach(id => {
+    document.getElementById(id).addEventListener('click', function() {
+      this.querySelector('input[type="radio"]').checked = true;
+      selectMode(this.querySelector('input[type="radio"]').value);
+    });
+  });
+</script>
 {% endblock %}
