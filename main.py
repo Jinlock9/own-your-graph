@@ -176,6 +176,24 @@ def _verify_password(password: str, hashed: str) -> bool:
 SERIES_COLORS = ["#00e5ff", "#ff4081", "#00e676", "#ffab40", "#ce93d8", "#ff6e40", "#40c4ff"]
 
 
+def _add_annotation_vline(fig: go.Figure, x_val: str, label: str) -> None:
+    """Draw a vertical annotation line without triggering Plotly's internal
+    _mean() call, which fails when x-axis values are strings (date labels)."""
+    fig.add_shape(
+        type="line",
+        x0=x_val, x1=x_val, y0=0, y1=1, yref="paper",
+        line=dict(dash="dash", color="#ffab40", width=1.5),
+    )
+    fig.add_annotation(
+        x=x_val, y=0.98, yref="paper",
+        text=label,
+        showarrow=False,
+        font=dict(size=10, color="#ffab40"),
+        xanchor="left", yanchor="top",
+        bgcolor="rgba(0,0,0,0)",
+    )
+
+
 def _format_date(dt: datetime, time_unit: str) -> str:
     if time_unit == 'week':
         return dt.strftime("%G-W%V")
@@ -270,12 +288,7 @@ def _compute_metric_view_data(m: Metric, entries: list, annotations: list) -> di
                     hovertemplate="<b>%{y}</b><br>%{x}<extra></extra>",
                 ))
             for ann in annotations:
-                fig_combined.add_vline(
-                    x=_format_date(ann.annotated_at, tu),
-                    line_dash="dash", line_color="#ffab40", line_width=1.5,
-                    annotation_text=ann.label, annotation_position="top left",
-                    annotation=dict(font_size=10, font_color="#ffab40"),
-                )
+                _add_annotation_vline(fig_combined, _format_date(ann.annotated_at, tu), ann.label)
             layout = _chart_layout(m.unit)
             layout["legend"] = dict(bgcolor="rgba(0,0,0,0)",
                                     bordercolor="rgba(255,255,255,0.1)", borderwidth=1)
@@ -299,12 +312,7 @@ def _compute_metric_view_data(m: Metric, entries: list, annotations: list) -> di
                                   annotation_text=f"Best: {s_best}",
                                   annotation_position="bottom right")
                 for ann in annotations:
-                    fig_sep.add_vline(
-                        x=_format_date(ann.annotated_at, tu),
-                        line_dash="dash", line_color="#ffab40", line_width=1.5,
-                        annotation_text=ann.label, annotation_position="top left",
-                        annotation=dict(font_size=10, font_color="#ffab40"),
-                    )
+                    _add_annotation_vline(fig_sep, _format_date(ann.annotated_at, tu), ann.label)
                 fig_sep.update_layout(**_chart_layout(m.unit))
                 sep_list.append({
                     "label": label,
@@ -324,12 +332,7 @@ def _compute_metric_view_data(m: Metric, entries: list, annotations: list) -> di
             fig.add_hline(y=best_val, line_dash="dot", line_color="#ff4081",
                           annotation_text=f"Best: {best_val}", annotation_position="bottom right")
             for ann in annotations:
-                fig.add_vline(
-                    x=_format_date(ann.annotated_at, tu),
-                    line_dash="dash", line_color="#ffab40", line_width=1.5,
-                    annotation_text=ann.label, annotation_position="top left",
-                    annotation=dict(font_size=10, font_color="#ffab40"),
-                )
+                _add_annotation_vline(fig, _format_date(ann.annotated_at, tu), ann.label)
             fig.update_layout(**_chart_layout(m.unit))
             chart_json = json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
 
