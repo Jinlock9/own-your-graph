@@ -32,6 +32,25 @@
     color: var(--text-dim);
     line-height: 1.4;
   }
+  .series-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.6rem;
+    border: 1px solid rgba(255,171,64,0.35);
+    background: rgba(255,171,64,0.07);
+    color: var(--warn);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    border-radius: 2px;
+  }
+  .series-tag-remove {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    line-height: 1;
+  }
+  .series-tag-remove:hover { color: var(--accent2); }
 </style>
 {% endblock %}
 {% block content %}
@@ -43,7 +62,7 @@
 <div style="max-width:520px;">
   <div class="card">
     {% if error %}<div class="error-msg">{{ error }}</div>{% endif %}
-    <form method="post" action="/metrics/new">
+    <form method="post" action="/metrics/new" onsubmit="return prepareSubmit()">
       <div class="form-group">
         <label for="name">Metric Name *</label>
         <input type="text" id="name" name="name" placeholder="e.g. matmul_kernel_cycles" required>
@@ -83,6 +102,24 @@
         </div>
       </div>
 
+      <!-- Series builder (multi mode only) -->
+      <div id="series-builder" style="display:none;">
+        <div class="form-group" style="margin-bottom:0.5rem;">
+          <label>Series</label>
+          <div style="display:flex;gap:0.5rem;">
+            <input type="text" id="series-input" placeholder="e.g. benchmark_A"
+                   style="flex:1;" onkeydown="if(event.key==='Enter'){event.preventDefault();addSeries();}">
+            <button type="button" class="btn" style="white-space:nowrap;" onclick="addSeries()">+ Add</button>
+          </div>
+          <div style="font-size:0.65rem;color:var(--text-dim);margin-top:0.3rem;">
+            Add each series you'll track (e.g. different benchmarks or configurations)
+          </div>
+        </div>
+        <div id="series-tags" style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-bottom:1rem;min-height:1.5rem;"></div>
+        <!-- Submitted as comma-separated string -->
+        <input type="hidden" name="series_names" id="series-names-hidden" value="">
+      </div>
+
       <button type="submit" class="btn" style="width:100%;justify-content:center;padding:0.75rem;">
         Create Metric →
       </button>
@@ -91,16 +128,53 @@
 </div>
 
 <script>
+  let seriesList = [];
+
   function selectMode(mode) {
     document.getElementById('card-single').classList.toggle('selected', mode === 'single');
     document.getElementById('card-multi').classList.toggle('selected', mode === 'multi');
+    document.getElementById('series-builder').style.display = mode === 'multi' ? 'block' : 'none';
   }
+
   // Allow clicking anywhere on the card to select it
   ['card-single', 'card-multi'].forEach(id => {
     document.getElementById(id).addEventListener('click', function() {
-      this.querySelector('input[type="radio"]').checked = true;
-      selectMode(this.querySelector('input[type="radio"]').value);
+      const radio = this.querySelector('input[type="radio"]');
+      radio.checked = true;
+      selectMode(radio.value);
     });
   });
+
+  function addSeries() {
+    const inp = document.getElementById('series-input');
+    const val = inp.value.trim();
+    inp.value = '';
+    if (!val || seriesList.includes(val)) return;
+    seriesList.push(val);
+    renderTags();
+  }
+
+  function removeSeries(val) {
+    seriesList = seriesList.filter(s => s !== val);
+    renderTags();
+  }
+
+  function renderTags() {
+    const container = document.getElementById('series-tags');
+    container.innerHTML = seriesList.map(s =>
+      `<span class="series-tag">${escHtml(s)}<span class="series-tag-remove" onclick="removeSeries(${JSON.stringify(s)})">×</span></span>`
+    ).join('');
+    document.getElementById('series-names-hidden').value = seriesList.join(',');
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function prepareSubmit() {
+    // Ensure hidden field is up to date (already synced, but just in case)
+    document.getElementById('series-names-hidden').value = seriesList.join(',');
+    return true;
+  }
 </script>
 {% endblock %}
