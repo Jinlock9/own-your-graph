@@ -180,39 +180,72 @@
         <input type="number" id="value" name="value" step="any" placeholder="e.g. 482930" required>
       </div>
       <div class="form-group">
-        {% if time_unit == 'week' %}
+        {% if time_unit == 'month' %}
+        <label>Month</label>
+        <div style="display:flex;gap:0.5rem;">
+          <select id="ra_month" onchange="syncMonthField()" style="flex:1;">
+            <option value="01">January</option>
+            <option value="02">February</option>
+            <option value="03">March</option>
+            <option value="04">April</option>
+            <option value="05">May</option>
+            <option value="06">June</option>
+            <option value="07">July</option>
+            <option value="08">August</option>
+            <option value="09">September</option>
+            <option value="10">October</option>
+            <option value="11">November</option>
+            <option value="12">December</option>
+          </select>
+          <select id="ra_year" onchange="syncMonthField()" style="flex:0 0 auto;width:88px;"></select>
+        </div>
+        <input type="hidden" id="recorded_at" name="recorded_at">
+        <script>
+          (function() {
+            const now = new Date();
+            const curYear = now.getFullYear();
+            const yearSel = document.getElementById('ra_year');
+            for (let y = curYear - 3; y <= curYear + 1; y++) {
+              const opt = document.createElement('option');
+              opt.value = y; opt.textContent = y;
+              if (y === curYear) opt.selected = true;
+              yearSel.appendChild(opt);
+            }
+            document.getElementById('ra_month').value =
+              String(now.getMonth() + 1).padStart(2, '0');
+            syncMonthField();
+          })();
+          function syncMonthField() {
+            document.getElementById('recorded_at').value =
+              `${document.getElementById('ra_year').value}-${document.getElementById('ra_month').value}`;
+          }
+        </script>
+        {% elif time_unit == 'week' %}
         <label for="recorded_at">Week</label>
         <input type="week" id="recorded_at" name="recorded_at">
-        {% elif time_unit == 'month' %}
-        <label for="recorded_at">Month</label>
-        <input type="month" id="recorded_at" name="recorded_at">
+        <script>
+          (function() {
+            const d = new Date();
+            const utc = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+            const day = utc.getUTCDay() || 7;
+            utc.setUTCDate(utc.getUTCDate() + 4 - day);
+            const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
+            const wk = Math.ceil((((utc - yearStart) / 86400000) + 1) / 7);
+            document.getElementById('recorded_at').value =
+              `${utc.getUTCFullYear()}-W${String(wk).padStart(2, '0')}`;
+          })();
+        </script>
         {% else %}
         <label for="recorded_at">Date</label>
         <input type="date" id="recorded_at" name="recorded_at">
+        <script>
+          (function() {
+            const t = new Date();
+            document.getElementById('recorded_at').value =
+              `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
+          })();
+        </script>
         {% endif %}
-          <script>
-            (function() {
-              const t = new Date();
-              const timeUnit = '{{ time_unit }}';
-              const yyyy = t.getFullYear();
-              const mm = String(t.getMonth() + 1).padStart(2, '0');
-              const dd = String(t.getDate()).padStart(2, '0');
-              if (timeUnit === 'week') {
-                // Compute ISO week number
-                const d = new Date(Date.UTC(yyyy, t.getMonth(), t.getDate()));
-                const dayNum = d.getUTCDay() || 7;
-                d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-                const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-                const wk = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
-                document.getElementById('recorded_at').value =
-                  `${d.getUTCFullYear()}-W${String(wk).padStart(2, '0')}`;
-              } else if (timeUnit === 'month') {
-                document.getElementById('recorded_at').value = `${yyyy}-${mm}`;
-              } else {
-                document.getElementById('recorded_at').value = `${yyyy}-${mm}-${dd}`;
-              }
-            })();
-          </script>
         <div style="font-size:0.65rem;color:var(--text-dim);margin-top:0.3rem;">
           {% if time_unit == 'week' %}Leave blank for this week
           {% elif time_unit == 'month' %}Leave blank for this month
