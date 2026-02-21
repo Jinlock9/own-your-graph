@@ -27,7 +27,7 @@
     border-bottom: 1px solid var(--border);
   }
 </style>
-{% if time_unit not in ('week', 'month') %}
+{% if time_unit != 'month' %}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.min.css">
 <style>
   .flatpickr-input { cursor: pointer; }
@@ -228,19 +228,31 @@
           }
         </script>
         {% elif time_unit == 'week' %}
-        <label for="recorded_at">Week</label>
-        <input type="week" id="recorded_at" name="recorded_at">
+        <label>Week</label>
+        <input type="text" id="ra_week_display" placeholder="Pick a week" readonly>
+        <input type="hidden" id="recorded_at" name="recorded_at">
+        <script src="https://cdn.jsdelivr.net/npm/flatpickr" defer></script>
         <script>
-          (function() {
-            const d = new Date();
-            const utc = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-            const day = utc.getUTCDay() || 7;
-            utc.setUTCDate(utc.getUTCDate() + 4 - day);
-            const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
-            const wk = Math.ceil((((utc - yearStart) / 86400000) + 1) / 7);
-            document.getElementById('recorded_at').value =
-              `${utc.getUTCFullYear()}-W${String(wk).padStart(2, '0')}`;
-          })();
+          document.addEventListener('DOMContentLoaded', function() {
+            function isoWeek(date) {
+              const u = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+              const day = u.getUTCDay() || 7;
+              u.setUTCDate(u.getUTCDate() + 4 - day);
+              const jan1 = new Date(Date.UTC(u.getUTCFullYear(), 0, 1));
+              return { year: u.getUTCFullYear(), week: Math.ceil((((u - jan1) / 86400000) + 1) / 7) };
+            }
+            function applyWeek(date) {
+              const { year, week } = isoWeek(date);
+              document.getElementById('recorded_at').value = `${year}-W${String(week).padStart(2, '0')}`;
+              document.getElementById('ra_week_display').value = `Week ${week}, ${year}`;
+            }
+            applyWeek(new Date());
+            flatpickr('#ra_week_display', {
+              weekNumbers: true,
+              defaultDate: new Date(),
+              onChange: function(dates) { if (dates.length) applyWeek(dates[0]); }
+            });
+          });
         </script>
         {% else %}
         <label for="recorded_at">Date</label>
