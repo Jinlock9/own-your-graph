@@ -1,5 +1,33 @@
 {% extends "base.html" %}
 {% block title %}{{ metric.name }} — own/graph{% endblock %}
+{% block extra_head %}
+<style>
+  .view-toggle {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+  .view-btn {
+    font-size: 0.72rem;
+    padding: 0.35rem 0.9rem;
+    letter-spacing: 0.08em;
+  }
+  .view-btn.active {
+    background: rgba(0,229,255,0.16);
+    border-color: var(--accent);
+    box-shadow: 0 0 12px rgba(0,229,255,0.18);
+  }
+  .sep-chart-label {
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--border);
+  }
+</style>
+{% endblock %}
 {% block content %}
 <div class="page-header">
   <div>
@@ -10,6 +38,9 @@
         <span class="tag" style="color:var(--text-dim)">↓ lower is better</span>
       {% else %}
         <span class="tag" style="color:var(--text-dim)">↑ higher is better</span>
+      {% endif %}
+      {% if metric.graph_mode == 'multi' %}
+        <span class="tag" style="border-color:rgba(255,171,64,0.35);color:var(--warn);">multi graph</span>
       {% endif %}
       {% if metric.description %}
       <span style="font-size:0.75rem;color:var(--text-dim);">— {{ metric.description }}</span>
@@ -54,10 +85,39 @@
   </div>
 </div>
 
-<!-- Chart -->
-<div class="card" style="margin-bottom:2rem;padding:1.2rem 1rem 0.5rem;">
-  <div id="chart" style="width:100%;height:380px;"></div>
-</div>
+<!-- Chart section -->
+{% if metric.graph_mode == 'multi' %}
+
+  <!-- View toggle -->
+  <div class="view-toggle">
+    <button class="btn view-btn active" id="btn-combined" onclick="switchView('combined')">Combined View</button>
+    <button class="btn view-btn" id="btn-separate" onclick="switchView('separate')">Separate View</button>
+  </div>
+
+  <!-- Combined chart -->
+  <div id="view-combined" class="card" style="margin-bottom:2rem;padding:1.2rem 1rem 0.5rem;">
+    <div id="chart-combined" style="width:100%;height:380px;"></div>
+  </div>
+
+  <!-- Separate charts (one per series) -->
+  <div id="view-separate" style="display:none;margin-bottom:2rem;">
+    {% for s in series_charts_list %}
+    <div class="card" style="margin-bottom:1rem;padding:1.2rem 1rem 0.8rem;">
+      <div class="sep-chart-label">{{ s }}</div>
+      <div id="chart-sep-{{ loop.index0 }}" style="width:100%;height:300px;"></div>
+    </div>
+    {% endfor %}
+  </div>
+
+{% else %}
+
+  <!-- Single mode chart -->
+  <div class="card" style="margin-bottom:2rem;padding:1.2rem 1rem 0.5rem;">
+    <div id="chart" style="width:100%;height:380px;"></div>
+  </div>
+
+{% endif %}
+
 {% else %}
 <div class="card" style="text-align:center;padding:2.5rem;margin-bottom:2rem;">
   <div style="font-size:0.85rem;color:var(--text-dim);">No data yet. Log your first entry below.</div>
@@ -73,13 +133,29 @@
       + Log Entry
     </div>
     <form method="post" action="/metrics/{{ metric.id }}/entries">
+      {% if metric.graph_mode == 'multi' %}
+      <div class="form-group">
+        <label for="series_label">Series / Benchmark *</label>
+        <input type="text" id="series_label" name="series_label"
+               list="series-datalist"
+               placeholder="e.g. benchmark_A" required>
+        {% if series_labels %}
+        <datalist id="series-datalist">
+          {% for lbl in series_labels %}
+          <option value="{{ lbl }}">
+          {% endfor %}
+        </datalist>
+        {% endif %}
+        <div style="font-size:0.65rem;color:var(--text-dim);margin-top:0.3rem;">Name this data series</div>
+      </div>
+      {% endif %}
       <div class="form-group">
         <label for="value">Value{% if metric.unit %} ({{ metric.unit }}){% endif %} *</label>
         <input type="number" id="value" name="value" step="any" placeholder="e.g. 482930" required>
       </div>
       <div class="form-group">
         <label for="recorded_at">Date / Time</label>
-        <input type="datetime-local" id="recorded_at" name="recorded_at" id="recorded_at">
+        <input type="datetime-local" id="recorded_at" name="recorded_at">
           <script>
             document.getElementById('recorded_at').value = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
           </script>
@@ -106,6 +182,7 @@
         <thead>
           <tr>
             <th>#</th>
+            {% if metric.graph_mode == 'multi' %}<th>Series</th>{% endif %}
             <th>Value</th>
             <th>Date</th>
             <th>Note</th>
@@ -116,6 +193,9 @@
           {% for e in entries %}
           <tr>
             <td style="color:var(--text-dim);font-size:0.7rem;">{{ loop.index }}</td>
+            {% if metric.graph_mode == 'multi' %}
+            <td style="font-size:0.75rem;color:var(--warn);white-space:nowrap;">{{ e.series_label or '—' }}</td>
+            {% endif %}
             <td style="font-weight:500;color:#fff;">{{ e.value }}</td>
             <td style="color:var(--text-dim);font-size:0.78rem;">
               {{ e.recorded_at.strftime('%Y-%m-%d %H:%M') }}
@@ -142,6 +222,46 @@
 </div>
 
 {% if chart_json %}
+{% if metric.graph_mode == 'multi' %}
+<script>
+  // Combined chart
+  const combinedData = {{ chart_json | safe }};
+  Plotly.newPlot('chart-combined', combinedData.data, combinedData.layout, {
+    responsive: true,
+    displayModeBar: true,
+    modeBarButtonsToRemove: ['toImage', 'sendDataToCloud'],
+    displaylogo: false,
+  });
+
+  // Separate charts data (lazy-initialized on first switch)
+  const seriesData = {{ series_charts_json | safe }};
+  let separateInitialized = false;
+
+  function switchView(view) {
+    const combined = document.getElementById('view-combined');
+    const separate = document.getElementById('view-separate');
+    const btnC = document.getElementById('btn-combined');
+    const btnS = document.getElementById('btn-separate');
+
+    if (view === 'separate' && !separateInitialized) {
+      seriesData.forEach(function(s, i) {
+        Plotly.newPlot('chart-sep-' + i, s.chartData.data, s.chartData.layout, {
+          responsive: true,
+          displayModeBar: true,
+          modeBarButtonsToRemove: ['toImage', 'sendDataToCloud'],
+          displaylogo: false,
+        });
+      });
+      separateInitialized = true;
+    }
+
+    combined.style.display = view === 'combined' ? 'block' : 'none';
+    separate.style.display = view === 'separate' ? 'block' : 'none';
+    btnC.classList.toggle('active', view === 'combined');
+    btnS.classList.toggle('active', view === 'separate');
+  }
+</script>
+{% else %}
 <script>
   const data = {{ chart_json | safe }};
   Plotly.newPlot('chart', data.data, data.layout, {
@@ -151,5 +271,6 @@
     displaylogo: false,
   });
 </script>
+{% endif %}
 {% endif %}
 {% endblock %}
