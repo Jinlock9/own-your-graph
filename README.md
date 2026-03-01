@@ -38,12 +38,11 @@ source venv/bin/activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Set your password
-export TRACKER_PASSWORD="your-password-here"
-export SECRET_KEY="any-random-string-for-session-signing"
-
-# 5. Run
+# 4. Run
 uvicorn main:app --reload --port 8000
+
+# 5. Deactivate venv
+deactivate
 ```
 
 Open http://localhost:8000, log in, and create your first metric.
